@@ -32,11 +32,11 @@ check required terragrunt "phase 1"   --version
 check optional tflint     "phase 1"   --version
 check required kubelogin  "phase 1"   --version
 check required python3    "phase 2"   --version
+check optional trivy      "phase 2"   --version
 check required docker     "phase 2"   --version
 check required kubectl    "phase 3"   version --client
 check required helm       "phase 3"   version --short
 check required ansible    "phase 5"   --version
-check optional trivy      "phase 4"   --version
 check optional checkov    "phase 4"   --version
 
 if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then

@@ -41,7 +41,7 @@ GitHub Actions ──OIDC (no secrets)──▶ Azure
 |-------|----------------------------------------------------|-------------|
 | 0     | Repo standards, remote state, GitHub OIDC          | Done        |
 | 1     | Terraform modules + Terragrunt environments        | Done        |
-| 2     | Sortie Tracker app + Docker                        | Planned     |
+| 2     | Sortie Tracker app + Docker                        | Done        |
 | 3     | Helm chart + AKS platform add-ons                  | Planned     |
 | 4     | GitHub Actions CI/CD                               | Planned     |
 | 5     | Ansible + legacy-to-AKS migration                  | Planned     |
@@ -105,6 +105,51 @@ make infra-unit UNIT=aks CMD=plan
 | PostgreSQL       | B1ms, 7-day backups  | D2ds_v5, zone-redundant HA, 35-day |
 | Key Vault        | 7-day soft delete    | 90-day soft delete + purge protection |
 | Log retention    | 30 days, 1 GB/day cap| 90 days                           |
+
+## Application (Phase 2)
+
+**Sortie Tracker** is a FastAPI service tracking aircraft mission capability
+(FMC / PMC / NMC) and sortie lifecycles, with the business rules a maintenance
+operations center would enforce:
+
+- NMC aircraft cannot be scheduled or launched
+- An aircraft cannot fly two sorties at once
+- Sorties move `SCHEDULED → AIRBORNE → LANDED|ABORTED` or `SCHEDULED → CANCELLED`, nothing else
+- A post-flight maintenance write-up grounds the aircraft (NMC)
+- `GET /api/v1/readiness` reports the **mission-capable rate**, a core USAF readiness KPI
+
+| Endpoint                               | Purpose                                         |
+|----------------------------------------|-------------------------------------------------|
+| `GET/POST /api/v1/aircraft`, `GET/PATCH /api/v1/aircraft/{id}` | Fleet management             |
+| `GET/POST /api/v1/sorties`, `POST /api/v1/sorties/{id}/transition` | Sortie lifecycle         |
+| `GET /api/v1/readiness`                | Fleet readiness summary                         |
+| `GET /healthz` / `GET /readyz`         | Liveness (no DB) / readiness (checks DB)        |
+| `GET /metrics`                         | Prometheus RED + business metrics               |
+| `GET /docs`                            | OpenAPI UI                                      |
+
+**Operability built in:**
+- One JSON log line per event, each carrying the request's `X-Request-ID`
+  (generated or propagated), returned on every response including errors
+- Business-rule rejections return a stable `rule` name, are logged, and counted
+  in `sortie_tracker_business_rule_violations_total{rule=...}`
+- DB outages return 503 (not 500) and fail `/readyz` without failing `/healthz`,
+  so Kubernetes drains traffic instead of restart-looping pods
+- Configuration from env vars **or** Key Vault CSI-mounted files, using the same
+  secret names Terraform writes
+
+**Container:** multi-stage, Python 3.13 slim, OS patches applied, pip removed,
+UID 10001, read-only root filesystem compatible, dependencies pinned in
+`app/constraints.txt`. 0 fixable HIGH/CRITICAL vulnerabilities (Trivy) and
+Checkov clean at time of writing.
+
+```bash
+make app-venv                    # local virtualenv
+make app-lint app-test           # ruff + unit tests (SQLite, no Docker)
+make app-test-integration        # migrations, schema drift, API on PostgreSQL 16
+make app-up app-seed             # stack on http://localhost:18080 with 24 aircraft / 300 sorties
+make app-build app-scan          # image tagged with git SHA + Trivy gate
+make app-down
+```
 
 ## Repository layout
 

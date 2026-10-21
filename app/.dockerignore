@@ -1,0 +1,9 @@
+# Build context allow-list: only what the Dockerfile copies.
+*
+!constraints.txt
+!pyproject.toml
+!src/
+!alembic.ini
+!migrations/
+**/__pycache__
+**/*.pyc

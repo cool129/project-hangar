@@ -1,0 +1,72 @@
+# Local development stack: PostgreSQL 16 (same major version as Azure),
+# a one-shot migration job, and the API, all hardened the way AKS will run them.
+#
+#   docker compose up -d --build
+#   docker compose run --rm api sortie-tracker-seed --if-empty
+#   curl localhost:18080/api/v1/readiness      (host port: API_PORT, default 18080)
+name: sortie-tracker
+
+x-db-env: &db-env
+  DB_HOST: db
+  DB_PORT: "5432"
+  DB_NAME: sortie_tracker
+  DB_USER: sortie
+  DB_PASSWORD: ${POSTGRES_PASSWORD:-local-dev-only}
+  DB_SSLMODE: disable
+  APP_ENV: local
+  LOG_LEVEL: INFO
+
+x-hardening: &hardening
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: sortie_tracker
+      POSTGRES_USER: sortie
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-dev-only}
+    ports:
+      - "127.0.0.1:55432:5432"  # host access for integration tests
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sortie -d sortie_tracker"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    <<: *hardening
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-local}
+    image: sortie-tracker:local
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *db-env
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *hardening
+    image: sortie-tracker:local
+    environment:
+      <<: *db-env
+      GIT_SHA: ${GIT_SHA:-local}
+    ports:
+      - "127.0.0.1:${API_PORT:-18080}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:

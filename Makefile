@@ -89,6 +89,69 @@ aks-credentials: ## Merge kubeconfig for ENV's cluster (Entra ID auth via kubelo
 	az aks get-credentials -g rg-hangar-$(ENV) -n aks-hangar-$(ENV) --overwrite-existing
 	kubelogin convert-kubeconfig -l azurecli
 
+##@ Phase 2 - Application
+
+APP_DIR   := app
+APP_VENV  := $(APP_DIR)/.venv
+APP_IMAGE ?= sortie-tracker
+GIT_SHA   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo local)
+COMPOSE   := docker compose -f $(APP_DIR)/docker-compose.yml
+# 127.0.0.1, not localhost: on Windows/WSL localhost may resolve to ::1 first,
+# which Docker does not publish on, and the connection stalls.
+TEST_DATABASE_URL ?= postgresql+psycopg://sortie:local-dev-only@127.0.0.1:55432/sortie_tracker_it?connect_timeout=5
+
+.PHONY: app-venv
+app-venv: ## Create app/.venv with runtime (pinned) + dev dependencies
+	python3 -m venv $(APP_VENV)
+	$(APP_VENV)/bin/pip install -c $(APP_DIR)/constraints.txt -e '$(APP_DIR)[dev]'
+
+.PHONY: app-lint
+app-lint: ## Ruff lint + format check
+	cd $(APP_DIR) && .venv/bin/ruff check . && .venv/bin/ruff format --check .
+
+.PHONY: app-test
+app-test: ## Unit tests with coverage (in-memory SQLite, no Docker needed)
+	cd $(APP_DIR) && .venv/bin/pytest -m "not integration" --cov --cov-report=term-missing:skip-covered
+
+.PHONY: app-test-integration
+app-test-integration: ## Migrations, schema drift and API tests against PostgreSQL in Docker
+	$(COMPOSE) up -d --wait db
+	@# Throwaway database: the tests downgrade the schema, so never use the dev one.
+	$(COMPOSE) exec -T db psql -U sortie -d sortie_tracker -q \
+		-c "DROP DATABASE IF EXISTS sortie_tracker_it" -c "CREATE DATABASE sortie_tracker_it"
+	cd $(APP_DIR) && TEST_DATABASE_URL='$(TEST_DATABASE_URL)' .venv/bin/pytest -m integration -v
+
+.PHONY: app-lock
+app-lock: ## Regenerate constraints.txt by resolving dependencies inside the runtime base image
+	docker run --rm -v "$(CURDIR)/$(APP_DIR):/src:ro" python:3.13-slim sh -c \
+		'cp -r /src /tmp/app && pip install -q --root-user-action=ignore /tmp/app >/dev/null && pip freeze --exclude sortie-tracker' \
+		| { echo "# Pinned runtime dependency versions for reproducible image builds."; echo "# Regenerate: make app-lock"; cat; } \
+		> $(APP_DIR)/constraints.txt
+
+.PHONY: app-build
+app-build: ## Build the container image tagged with the git SHA
+	docker build --build-arg GIT_SHA=$(GIT_SHA) -t $(APP_IMAGE):$(GIT_SHA) -t $(APP_IMAGE):local $(APP_DIR)
+
+.PHONY: app-scan
+app-scan: ## Trivy scan: fail on fixable HIGH/CRITICAL vulnerabilities
+	trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 $(APP_IMAGE):local
+
+.PHONY: app-up
+app-up: ## Run db + migrations + API locally on http://localhost:18080 (API_PORT)
+	GIT_SHA=$(GIT_SHA) $(COMPOSE) up -d --build --wait api
+
+.PHONY: app-seed
+app-seed: ## Load deterministic squadron data (skipped if data exists)
+	$(COMPOSE) run --rm api sortie-tracker-seed --if-empty
+
+.PHONY: app-logs
+app-logs: ## Follow API logs (JSON)
+	$(COMPOSE) logs -f api
+
+.PHONY: app-down
+app-down: ## Stop the local stack and delete its database volume
+	$(COMPOSE) down -v
+
 ##@ Quality
 
 .PHONY: hooks
