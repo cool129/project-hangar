@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.hangar.example
 *.pem
 *.key
 kubeconfig*
@@ -21,7 +22,9 @@ override.tf.json
 .terraformrc
 terraform.rc
 **/.terragrunt-cache/*
-# NOTE: .terraform.lock.hcl is intentionally committed (pins provider hashes).
+# Lock files are committed per Terragrunt unit (infra/live/**), where providers
+# are actually resolved; module directories are sources, not root modules.
+infra/modules/**/.terraform.lock.hcl
 
 # --- Python ---
 __pycache__/

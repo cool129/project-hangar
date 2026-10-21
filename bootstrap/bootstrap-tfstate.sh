@@ -95,5 +95,7 @@ upsert_env AZURE_LOCATION "$LOCATION"
 upsert_env TF_STATE_RG "$STATE_RG"
 upsert_env TF_STATE_SA "$STATE_SA"
 upsert_env TF_STATE_CONTAINER "$STATE_CONTAINER"
+# Granted Key Vault Secrets Officer + AKS RBAC Cluster Admin by Terraform.
+upsert_env HANGAR_OPERATOR_OBJECT_ID "$PRINCIPAL_ID"
 
 log "Done. Settings written to ${HANGAR_ENV_FILE#"${REPO_ROOT}"/}"

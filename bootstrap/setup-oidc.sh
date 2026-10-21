@@ -133,6 +133,7 @@ SA_ID="$(az storage account show --name "$TF_STATE_SA" --resource-group "$TF_STA
 assign_role "$SP_OBJECT_ID" ServicePrincipal "Storage Blob Data Contributor" "$SA_ID"
 
 upsert_env AZURE_CLIENT_ID "$APP_ID"
+upsert_env HANGAR_CI_OBJECT_ID "$SP_OBJECT_ID"
 upsert_env GITHUB_REPO "$GITHUB_REPO"
 
 # --- GitHub repository variables (optional) ----------------------------------
@@ -144,6 +145,9 @@ declare -A GH_VARS=(
   [TF_STATE_RG]="$TF_STATE_RG"
   [TF_STATE_SA]="$TF_STATE_SA"
   [TF_STATE_CONTAINER]="$TF_STATE_CONTAINER"
+  [AZURE_LOCATION]="${AZURE_LOCATION:-eastus2}"
+  [HANGAR_CI_OBJECT_ID]="$SP_OBJECT_ID"
+  [HANGAR_OPERATOR_OBJECT_ID]="${HANGAR_OPERATOR_OBJECT_ID:-}"
 )
 
 if [[ "$SET_GH_VARS" == "true" ]]; then

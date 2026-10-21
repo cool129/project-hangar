@@ -30,6 +30,7 @@ check optional gh         "phase 0"   --version
 check required terraform  "phase 1"   version
 check required terragrunt "phase 1"   --version
 check optional tflint     "phase 1"   --version
+check required kubelogin  "phase 1"   --version
 check required python3    "phase 2"   --version
 check required docker     "phase 2"   --version
 check required kubectl    "phase 3"   version --client

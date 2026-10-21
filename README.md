@@ -39,8 +39,8 @@ GitHub Actions ──OIDC (no secrets)──▶ Azure
 
 | Phase | Scope                                              | Status      |
 |-------|----------------------------------------------------|-------------|
-| 0     | Repo standards, remote state, GitHub OIDC          | In progress |
-| 1     | Terraform modules + Terragrunt environments        | Planned     |
+| 0     | Repo standards, remote state, GitHub OIDC          | Done        |
+| 1     | Terraform modules + Terragrunt environments        | Done        |
 | 2     | Sortie Tracker app + Docker                        | Planned     |
 | 3     | Helm chart + AKS platform add-ons                  | Planned     |
 | 4     | GitHub Actions CI/CD                               | Planned     |
@@ -62,7 +62,49 @@ make hooks                         # install pre-commit hooks
 ```
 
 Bootstrap writes non-secret settings (subscription, state account, client ID) to
-`.env.hangar`, which is gitignored and read automatically by `make`.
+`.env.hangar`, which is gitignored and read automatically by `make`. Optional
+settings are documented in [.env.hangar.example](.env.hangar.example).
+
+## Infrastructure (Phase 1)
+
+Eight Terragrunt units per environment, applied in dependency order:
+
+```
+foundation ─┬─ network ─┬─ aks ──────┬─ app-identity
+            ├─ acr ─────┘            │
+            ├─ keyvault ─┬───────────┘
+            │            └─ postgres (also needs network)
+            └─ legacy-vm (needs network)
+```
+
+| Unit         | Module              | What it builds                                                         |
+|--------------|---------------------|------------------------------------------------------------------------|
+| foundation   | `foundation`        | Resource group, Log Analytics workspace, alert action group            |
+| network      | `network`           | VNet, aks/db/legacy subnets with NSGs, PostgreSQL private DNS zone     |
+| acr          | `acr`               | Private registry (admin user disabled), audit logs                     |
+| keyvault     | `keyvault`          | RBAC-mode Key Vault, audit logs                                        |
+| aks          | `aks`               | Entra-only AKS, workload identity, Cilium, KV CSI, Container Insights  |
+| postgres     | `postgres`          | Private Flexible Server, generated creds stored in Key Vault           |
+| app-identity | `workload_identity` | Managed identity federated to the app's Kubernetes service account     |
+| legacy-vm    | `legacy_vm`         | Ubuntu VM that Ansible turns into the pre-migration deployment         |
+
+```bash
+make infra-validate              # terraform validate + terragrunt hcl validate
+make infra-scan                  # Checkov policy scan
+make infra-plan                  # ENV=dev by default
+make infra-apply                 # ~15-20 min for a fresh environment
+make aks-credentials
+make infra-destroy               # tear down when finished; dev is designed for this
+make infra-plan ENV=prod
+make infra-unit UNIT=aks CMD=plan
+```
+
+| Setting          | dev                  | prod                              |
+|------------------|----------------------|-----------------------------------|
+| AKS tier / nodes | Free, 1-3 × B2ms     | Standard (SLA), 2-5 × D2s_v5      |
+| PostgreSQL       | B1ms, 7-day backups  | D2ds_v5, zone-redundant HA, 35-day |
+| Key Vault        | 7-day soft delete    | 90-day soft delete + purge protection |
+| Log retention    | 30 days, 1 GB/day cap| 90 days                           |
 
 ## Repository layout
 
@@ -80,3 +122,4 @@ docs/        architecture, ADRs, runbooks, onboarding guide
 ## Design decisions
 
 - [ADR 0001: GitHub Actions authenticates to Azure with OIDC federation](docs/adr/0001-github-oidc-federation.md)
+- [ADR 0002: Terragrunt units per component, one state file per unit](docs/adr/0002-terragrunt-unit-layout.md)

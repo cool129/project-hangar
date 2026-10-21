@@ -23,12 +23,12 @@ require_az_login() {
 
 # Load previously written settings, if any.
 load_env() {
-  if [[ -f "$HANGAR_ENV_FILE" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$HANGAR_ENV_FILE"
-    set +a
-  fi
+  [[ -f "$HANGAR_ENV_FILE" ]] || return 0
+  # Parse KEY=VALUE lines rather than `source`, so values with spaces are safe.
+  local key value
+  while IFS='=' read -r key value; do
+    [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] && export "${key}=${value}"
+  done < "$HANGAR_ENV_FILE"
 }
 
 # Insert or replace KEY=VALUE in the env file (portable: no sed -i).
