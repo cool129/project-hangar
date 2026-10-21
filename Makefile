@@ -152,6 +152,51 @@ app-logs: ## Follow API logs (JSON)
 app-down: ## Stop the local stack and delete its database volume
 	$(COMPOSE) down -v
 
+##@ Phase 3 - Kubernetes
+
+CHART := deploy/helm/sortie-tracker
+TAG   ?= $(GIT_SHA)
+# Placeholder identifiers so the chart renders without Terraform outputs.
+CHART_TEST_SETS := --set image.repository=example.azurecr.io/sortie-tracker --set image.tag=test \
+	--set secrets.keyVaultName=kv-example --set workloadIdentity.clientId=00000000-0000-0000-0000-000000000001 \
+	--set workloadIdentity.tenantId=00000000-0000-0000-0000-000000000002
+CRD_SCHEMAS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+
+.PHONY: chart-lint
+chart-lint: ## helm lint + kubeconform (incl. CRDs) + Checkov for dev and prod values
+	@mkdir -p reports/chart
+	@for env in dev prod; do \
+		helm lint $(CHART) -f $(CHART)/values-$$env.yaml $(CHART_TEST_SETS) --strict && \
+		helm template sortie-tracker $(CHART) -n sortie-tracker -f $(CHART)/values-$$env.yaml $(CHART_TEST_SETS) \
+			> reports/chart/$$env.yaml || exit 1; \
+	done
+	kubeconform -strict -summary -schema-location default -schema-location '$(CRD_SCHEMAS)' \
+		reports/chart/*.yaml deploy/platform/gateway.yaml deploy/platform/namespaces.yaml
+	checkov -d reports/chart --framework kubernetes --compact --quiet
+
+.PHONY: acr-push
+acr-push: ## Push the app image to ENV's ACR, tagged with the git SHA
+	$(eval ACR := $(shell terragrunt --working-dir infra/live/$(ENV)/acr output -raw login_server --log-level error))
+	az acr login --name $(firstword $(subst ., ,$(ACR)))
+	docker tag $(APP_IMAGE):local $(ACR)/$(APP_IMAGE):$(TAG)
+	docker push $(ACR)/$(APP_IMAGE):$(TAG)
+
+.PHONY: platform-install
+platform-install: ## Install namespaces, Envoy Gateway and kube-prometheus-stack on the current cluster
+	bash deploy/platform/install-addons.sh
+
+.PHONY: deploy
+deploy: ## Deploy TAG to ENV via Helm, then smoke test through the gateway
+	bash deploy/deploy.sh $(ENV) $(TAG)
+
+.PHONY: k8s-local-e2e
+k8s-local-e2e: app-build ## Full platform + chart end-to-end test on a local kind cluster
+	bash deploy/local/kind-e2e.sh
+
+.PHONY: k8s-local-down
+k8s-local-down: ## Delete the local kind cluster
+	kind delete cluster --name hangar
+
 ##@ Quality
 
 .PHONY: hooks

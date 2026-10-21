@@ -1,0 +1,56 @@
+# Throwaway PostgreSQL for the local kind cluster only (Azure uses the managed
+# Flexible Server). Lives outside the app namespace, which enforces the
+# `restricted` Pod Security profile that the postgres image does not meet.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: local-db
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: local-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_DB
+              value: sortie_tracker
+            - name: POSTGRES_USER
+              value: sortie
+            - name: POSTGRES_PASSWORD
+              value: local-dev-only
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "sortie", "-d", "sortie_tracker"]
+            periodSeconds: 3
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: local-db
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432

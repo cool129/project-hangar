@@ -9,6 +9,7 @@ schema to base, so point them at a disposable database.
 """
 
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 from sortie_tracker.config import Settings
 from sortie_tracker.db import Base
@@ -25,6 +26,7 @@ from sortie_tracker.main import create_app
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 APP_DIR = Path(__file__).resolve().parents[2]
+MIGRATION_LOCK_ID = 7_302_026  # must match migrations/env.py
 
 pytestmark = [
     pytest.mark.integration,
@@ -55,6 +57,27 @@ def test_migrations_upgrade_and_downgrade_cleanly(alembic_config):
 
     command.downgrade(alembic_config, "base")
     assert inspect(create_engine(DATABASE_URL)).get_table_names() == ["alembic_version"]
+
+
+def test_concurrent_migrations_serialize_on_advisory_lock(alembic_config):
+    """Pods starting together must not run migrations in parallel."""
+    command.downgrade(alembic_config, "base")
+    engine = create_engine(DATABASE_URL)
+    with engine.connect() as holder:
+        # Simulate another pod mid-migration.
+        holder.execute(text("SELECT pg_advisory_lock(:id)"), {"id": MIGRATION_LOCK_ID})
+        worker = threading.Thread(target=command.upgrade, args=(alembic_config, "head"))
+        worker.start()
+        worker.join(timeout=3)
+        assert worker.is_alive(), "upgrade should block while another runner holds the lock"
+        assert "aircraft" not in inspect(engine).get_table_names()
+        holder.execute(text("SELECT pg_advisory_unlock(:id)"), {"id": MIGRATION_LOCK_ID})
+        holder.commit()
+
+    worker.join(timeout=30)
+    assert not worker.is_alive()
+    assert "aircraft" in inspect(engine).get_table_names()
+    engine.dispose()
 
 
 def test_migrations_match_models(migrated_db):

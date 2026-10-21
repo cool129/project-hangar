@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sortie-tracker.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sortie-tracker.labels" . | nindent 4 }}
+  annotations:
+    checkov.io/skip1: CKV_K8S_11=No CPU limit by design to avoid CFS throttling; CPU requests drive scheduling and HPA, memory is limited.
+    checkov.io/skip2: CKV_K8S_43=Tags are immutable git SHAs; CI pins image.digest for promoted releases.
+    checkov.io/skip3: CKV_K8S_15=IfNotPresent is safe with immutable SHA tags/digests and avoids registry dependency on restart.
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0  # never drop below current capacity during a rollout
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "sortie-tracker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sortie-tracker.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/version: {{ include "sortie-tracker.imageTag" . | quote }}
+        {{- if eq .Values.secrets.provider "keyvault" }}
+        azure.workload.identity/use: "true"
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- if .Values.migrations.enabled }}
+      initContainers:
+        - name: migrate
+          {{- include "sortie-tracker.containerCommon" . | nindent 10 }}
+          command: ["alembic", "upgrade", "head"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- end }}
+      containers:
+        - name: api
+          {{- include "sortie-tracker.containerCommon" . | nindent 10 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          # Startup covers slow cold starts; liveness never checks the DB, so a
+          # database outage drains traffic (readiness) instead of restarting pods.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            # Give the gateway time to stop routing here before shutdown.
+            preStop:
+              sleep:
+                seconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: secrets
+          {{- if eq .Values.secrets.provider "keyvault" }}
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{ include "sortie-tracker.fullname" . }}
+          {{- else }}
+          secret:
+            secretName: {{ required "secrets.existingSecret is required for the kubernetes provider" .Values.secrets.existingSecret }}
+            defaultMode: 0400
+          {{- end }}
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "sortie-tracker.selectorLabels" . | nindent 14 }}
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "sortie-tracker.selectorLabels" . | nindent 14 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

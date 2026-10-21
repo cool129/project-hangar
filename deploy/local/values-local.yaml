@@ -1,0 +1,25 @@
+# kind cluster: same chart, same app code path. Only the secret source differs:
+# a Kubernetes Secret with the Key Vault key names instead of the CSI driver.
+image:
+  repository: sortie-tracker
+  tag: local
+  pullPolicy: Never  # loaded with `kind load docker-image`
+
+app:
+  environment: local
+  dbSslMode: disable
+
+secrets:
+  provider: kubernetes
+  existingSecret: sortie-tracker-db
+
+autoscaling:
+  enabled: false
+replicaCount: 2  # two init containers race to migrate: exercises the advisory lock
+
+networkPolicy:
+  enabled: true
+  postgresCidr: 10.244.0.0/16  # kind pod CIDR (postgres runs as a pod here)
+
+serviceMonitor:
+  enabled: false  # monitoring stack skipped locally to save memory

@@ -1,0 +1,10 @@
+Sortie Tracker {{ include "sortie-tracker.imageTag" . }} deployed to namespace {{ .Release.Namespace }}.
+
+Rollout:     kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "sortie-tracker.fullname" . }}
+Logs:        kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/name={{ include "sortie-tracker.name" . }} -c api --tail=50
+Migrations:  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/name={{ include "sortie-tracker.name" . }} -c migrate
+{{- if .Values.httpRoute.enabled }}
+Public URL:  http://$(kubectl -n {{ .Values.httpRoute.gateway.namespace }} get gateway {{ .Values.httpRoute.gateway.name }} -o jsonpath='{.status.addresses[0].value}')/api/v1/readiness
+{{- else }}
+Local:       kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "sortie-tracker.fullname" . }} 8080:{{ .Values.service.port }}
+{{- end }}

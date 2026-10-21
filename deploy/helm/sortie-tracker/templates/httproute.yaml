@@ -1,0 +1,35 @@
+{{- if .Values.httpRoute.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "sortie-tracker.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sortie-tracker.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.httpRoute.gateway.name }}
+      namespace: {{ .Values.httpRoute.gateway.namespace }}
+  {{- with .Values.httpRoute.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    # Explicit allow-list: /metrics and /readyz are deliberately not exposed.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/
+        - path:
+            type: Exact
+            value: /healthz
+        - path:
+            type: Exact
+            value: /docs
+        - path:
+            type: Exact
+            value: /openapi.json
+      backendRefs:
+        - name: {{ include "sortie-tracker.fullname" . }}
+          port: {{ .Values.service.port }}
+{{- end }}

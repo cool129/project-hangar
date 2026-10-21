@@ -1,0 +1,10 @@
+app:
+  environment: dev
+  logLevel: DEBUG
+
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 4
+
+networkPolicy:
+  postgresCidr: 10.10.8.0/24  # infra/live/dev/env.hcl vnet 10.10.0.0/16 -> snet-db

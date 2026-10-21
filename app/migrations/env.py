@@ -3,7 +3,7 @@
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import create_engine, pool
+from sqlalchemy import create_engine, pool, text
 from sqlalchemy.engine import make_url
 
 from sortie_tracker import models  # noqa: F401 - registers tables on Base.metadata
@@ -15,6 +15,11 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+
+# Every pod runs migrations in an init container. A session-level advisory lock
+# makes concurrent runs queue up: the first applies pending revisions, the rest
+# find the schema already at head and exit. Released when the connection closes.
+MIGRATION_LOCK_ID = 7_302_026  # arbitrary, constant across releases
 
 
 def _database_url():
@@ -37,6 +42,11 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     engine = create_engine(_database_url(), poolclass=pool.NullPool)
     with engine.connect() as connection:
+        if connection.dialect.name == "postgresql":
+            connection.execute(text("SELECT pg_advisory_lock(:id)"), {"id": MIGRATION_LOCK_ID})
+            # End the implicit transaction so Alembic opens (and commits) its own;
+            # the session-level lock survives the commit.
+            connection.commit()
         context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
         with context.begin_transaction():
             context.run_migrations()

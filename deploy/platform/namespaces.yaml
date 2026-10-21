@@ -1,0 +1,35 @@
+# Platform-owned namespaces. Pod Security Admission is enforced per namespace:
+# application namespaces get `restricted` (the strictest built-in profile);
+# monitoring needs `privileged` because node-exporter reads host metrics.
+#
+# `hangar.io/gateway-access: "true"` is the onboarding switch that lets a
+# namespace attach HTTPRoutes to the shared gateway.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sortie-tracker
+  labels:
+    app.kubernetes.io/part-of: project-hangar
+    hangar.io/gateway-access: "true"
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/part-of: project-hangar
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: baseline
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: envoy-gateway-system
+  labels:
+    app.kubernetes.io/part-of: project-hangar
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted

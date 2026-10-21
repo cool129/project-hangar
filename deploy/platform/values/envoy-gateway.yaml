@@ -1,0 +1,10 @@
+# Envoy Gateway control plane. The chart also installs the Gateway API CRDs.
+deployment:
+  replicas: 1
+  envoyGateway:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 512Mi

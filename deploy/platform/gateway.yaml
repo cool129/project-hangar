@@ -1,0 +1,97 @@
+# Shared ingress for every mission app, built on Gateway API (the successor to
+# Ingress; ingress-nginx was retired upstream in March 2026).
+#
+# The platform team owns the Gateway; app teams own their HTTPRoutes. Only
+# namespaces labelled hangar.io/gateway-access=true may attach routes.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: envoy
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: hangar-proxy
+    namespace: envoy-gateway-system
+---
+# Data-plane settings: proxy sizing and JSON access logs. Envoy generates an
+# X-Request-ID when the client sends none and forwards it upstream, so one ID
+# ties the gateway log line to the app's log lines for the same request.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: hangar-proxy
+  namespace: envoy-gateway-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        # Preserves client IPs; Azure LB then health-checks via kube-proxy's
+        # healthCheckNodePort, so only nodes running a proxy receive traffic.
+        externalTrafficPolicy: Local
+      envoyDeployment:
+        replicas: 2
+        container:
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+  telemetry:
+    accessLog:
+      settings:
+        - format:
+            type: JSON
+            json:
+              start_time: "%START_TIME%"
+              method: "%REQ(:METHOD)%"
+              path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+              status: "%RESPONSE_CODE%"
+              duration_ms: "%DURATION%"
+              request_id: "%REQ(X-REQUEST-ID)%"
+              upstream: "%UPSTREAM_HOST%"
+              client_ip: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%"
+          sinks:
+            - type: File
+              file:
+                path: /dev/stdout
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: hangar-gateway
+  namespace: envoy-gateway-system
+spec:
+  gatewayClassName: envoy
+  listeners:
+    # HTTP only: TLS needs a DNS name for certificates (cert-manager + a
+    # domain is the documented follow-up; see ADR 0003).
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              hangar.io/gateway-access: "true"
+---
+# Envoy discards client-supplied X-Request-IDs at the edge by default. Mission
+# systems calling the API need end-to-end traceability, so keep a caller's ID
+# and generate one only when absent. (The app logs IDs as escaped JSON values,
+# so a hostile ID cannot forge log lines.)
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: hangar-gateway-client
+  namespace: envoy-gateway-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: hangar-gateway
+  headers:
+    requestID: PreserveOrGenerate

@@ -42,7 +42,7 @@ GitHub Actions ──OIDC (no secrets)──▶ Azure
 | 0     | Repo standards, remote state, GitHub OIDC          | Done        |
 | 1     | Terraform modules + Terragrunt environments        | Done        |
 | 2     | Sortie Tracker app + Docker                        | Done        |
-| 3     | Helm chart + AKS platform add-ons                  | Planned     |
+| 3     | Helm chart + AKS platform add-ons                  | Done        |
 | 4     | GitHub Actions CI/CD                               | Planned     |
 | 5     | Ansible + legacy-to-AKS migration                  | Planned     |
 | 6     | Monitoring, chaos drills, runbooks, GenAI triage   | Planned     |
@@ -151,6 +151,42 @@ make app-build app-scan          # image tagged with git SHA + Trivy gate
 make app-down
 ```
 
+## Kubernetes (Phase 3)
+
+```
+Internet ─▶ Azure LB ─▶ Envoy Gateway (hangar-gateway) ─HTTPRoute─▶ sortie-tracker Service ─▶ pods
+                         envoy-gateway-system                         sortie-tracker ns (PSS: restricted)
+                                                                       │  init: alembic upgrade head (advisory lock)
+                                                                       │  CSI: Key Vault secrets via workload identity
+                                                                       └─▶ PostgreSQL subnet :5432 (NetworkPolicy)
+Prometheus (monitoring ns) ─ServiceMonitor─▶ /metrics (cluster-internal only)
+```
+
+**Platform layer** (`deploy/platform/`, owned by the platform team):
+- Namespaces with Pod Security Admission: app namespaces enforce `restricted`
+- Envoy Gateway with one shared `Gateway`; namespaces opt in with
+  `hangar.io/gateway-access=true`. Gateway API replaces the retired ingress-nginx.
+- kube-prometheus-stack: discovers ServiceMonitors in every namespace; the Grafana
+  password is generated into a Secret, never committed
+
+**Application chart** (`deploy/helm/sortie-tracker/`, owned by the app team):
+- Workload identity ServiceAccount + Key Vault `SecretProviderClass`: no secrets in the cluster
+- Migrations in an init container, serialized by a PostgreSQL advisory lock
+- Non-root, read-only root FS, all capabilities dropped, seccomp `RuntimeDefault`,
+  no service-account token mounted
+- Startup/liveness/readiness probes, `preStop` drain, zero-downtime rolling update
+- HPA (fast scale-up, slow scale-down), PodDisruptionBudget, zone/host spreading
+- Default-deny NetworkPolicy: in from gateway + Prometheus; out to DNS + PostgreSQL only
+- HTTPRoute allow-list keeps `/metrics` and `/readyz` off the internet
+
+```bash
+make chart-lint                  # helm lint + kubeconform (with CRD schemas) + Checkov
+make k8s-local-e2e               # full platform + chart on kind: PSS, NetworkPolicy, gateway, migrations
+make aks-credentials ENV=dev
+make platform-install            # namespaces, Envoy Gateway, Prometheus/Grafana
+make acr-push deploy ENV=dev     # push image, helm upgrade, smoke test through the gateway
+```
+
 ## Repository layout
 
 ```
@@ -168,3 +204,4 @@ docs/        architecture, ADRs, runbooks, onboarding guide
 
 - [ADR 0001: GitHub Actions authenticates to Azure with OIDC federation](docs/adr/0001-github-oidc-federation.md)
 - [ADR 0002: Terragrunt units per component, one state file per unit](docs/adr/0002-terragrunt-unit-layout.md)
+- [ADR 0003: Gateway API for ingress; init-container migrations with an advisory lock](docs/adr/0003-gateway-api-and-migrations.md)

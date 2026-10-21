@@ -1,0 +1,114 @@
+# Defaults are production-safe; environment files (values-dev/prod.yaml) only
+# change sizing. Identity, registry and vault names are injected at deploy time
+# from Terraform outputs (see deploy/deploy.sh), never hard-coded.
+
+image:
+  repository: ""  # <acr>.azurecr.io/sortie-tracker
+  tag: ""  # git SHA; defaults to .Chart.AppVersion
+  digest: ""  # sha256:...; when set, pins the exact image and wins over tag
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+app:
+  environment: dev
+  logLevel: INFO
+  dbSslMode: require
+
+# Must match the federated credential subject created by Terraform:
+#   system:serviceaccount:sortie-tracker:sortie-tracker
+serviceAccount:
+  name: sortie-tracker
+  annotations: {}
+
+workloadIdentity:
+  clientId: ""  # app-identity unit output: client_id
+  tenantId: ""
+
+secrets:
+  # keyvault:   Secrets Store CSI driver + workload identity (AKS)
+  # kubernetes: an existing Secret with the same keys (local kind clusters, CI)
+  provider: keyvault
+  keyVaultName: ""
+  existingSecret: ""
+  mountPath: /mnt/secrets-store
+  # Key Vault secret names written by the postgres Terraform module.
+  objects:
+    - postgres-host
+    - postgres-database
+    - postgres-admin-username
+    - postgres-admin-password
+
+migrations:
+  # Runs `alembic upgrade head` in an init container. Concurrent pods serialize
+  # on a PostgreSQL advisory lock, so this is safe with any replica count.
+  # Migrations must be backward compatible (expand/contract) because old pods
+  # keep serving during a rolling update.
+  enabled: true
+
+service:
+  port: 80
+  targetPort: 8000
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 160Mi
+  # Memory limit protects the node; no CPU limit to avoid CFS throttling latency.
+  limits:
+    memory: 320Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Gateway API route. Only the public API surface is routed: /metrics and
+# /readyz stay cluster-internal.
+httpRoute:
+  enabled: true
+  gateway:
+    name: hangar-gateway
+    namespace: envoy-gateway-system
+  hostnames: []
+
+networkPolicy:
+  enabled: true
+  # Namespaces allowed to reach the pods on the app port.
+  ingressNamespaces:
+    - envoy-gateway-system
+    - monitoring
+  # CIDR of the PostgreSQL delegated subnet (network module: subnet_cidrs.db).
+  postgresCidr: ""
+  extraEgress: []
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  labels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  privileged: false
+  capabilities:
+    drop: ["ALL"]
+
+terminationGracePeriodSeconds: 30
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
