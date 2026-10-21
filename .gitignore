@@ -1,0 +1,53 @@
+# --- Local environment / secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+kubeconfig*
+
+# --- Terraform / Terragrunt ---
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+**/.terragrunt-cache/*
+# NOTE: .terraform.lock.hcl is intentionally committed (pins provider hashes).
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# --- Ansible ---
+*.retry
+ansible/.vault_pass*
+
+# --- Reports / artifacts ---
+reports/
+*.sarif
+
+# --- Editors / OS ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db

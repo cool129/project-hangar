@@ -1,0 +1,15 @@
+# Policy-as-code scanning for IaC, CI workflows, Kubernetes, Helm and Dockerfiles.
+# Any skipped check must be justified inline in code with:
+#   #checkov:skip=CKV_XXX:<reason>
+framework:
+  - terraform
+  - github_actions
+  - kubernetes
+  - helm
+  - dockerfile
+compact: true
+quiet: true
+soft-fail: false
+skip-path:
+  - .terragrunt-cache
+  - .terraform

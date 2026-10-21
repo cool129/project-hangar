@@ -1,0 +1,7 @@
+# Force LF everywhere so shell scripts, Terraform and YAML behave the same on
+# Windows checkouts, WSL, and Linux CI runners.
+* text=auto eol=lf
+
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary

@@ -1,0 +1,17 @@
+extends: default
+
+ignore: |
+  deploy/helm/*/templates/
+  **/.terragrunt-cache/
+
+rules:
+  line-length:
+    max: 140
+    level: warning
+  document-start: disable
+  comments:
+    min-spaces-from-content: 1
+  # GitHub Actions uses the bare key `on:`.
+  truthy:
+    allowed-values: ["true", "false", "on"]
+    check-keys: false
