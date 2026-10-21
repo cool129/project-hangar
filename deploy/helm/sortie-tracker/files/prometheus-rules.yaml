@@ -1,0 +1,133 @@
+# Sortie Tracker SLOs and alerts. Plain Prometheus rule groups, so `promtool
+# test rules` can unit-test them (tests/prometheus/). The chart wraps this file
+# in a PrometheusRule and substitutes __RUNBOOK_BASE__.
+#
+# SLO: 99% of API requests (excluding probes and scrapes) succeed (non-5xx),
+# measured over 30 days. Error budget = 1%. Alerting uses multi-window,
+# multi-burn-rate rules (Google SRE workbook): page on a fast burn that would
+# exhaust the monthly budget in ~2 days, ticket on a slow burn (~5 days).
+groups:
+  - name: sortie-tracker.recording
+    interval: 30s
+    rules:
+      - record: sortie_tracker:http_requests:rate5m
+        expr: sum(rate(http_requests_total{namespace="sortie-tracker", route!~"/healthz|/readyz|/metrics"}[5m]))
+      - record: sortie_tracker:http_errors:rate5m
+        expr: sum(rate(http_requests_total{namespace="sortie-tracker", route!~"/healthz|/readyz|/metrics", status=~"5.."}[5m]))
+      - record: sortie_tracker:error_ratio:rate5m
+        expr: sortie_tracker:http_errors:rate5m / sortie_tracker:http_requests:rate5m
+      - record: sortie_tracker:error_ratio:rate30m
+        expr: |
+          sum(rate(http_requests_total{namespace="sortie-tracker", route!~"/healthz|/readyz|/metrics", status=~"5.."}[30m]))
+          / sum(rate(http_requests_total{namespace="sortie-tracker", route!~"/healthz|/readyz|/metrics"}[30m]))
+      - record: sortie_tracker:error_ratio:rate1h
+        expr: |
+          sum(rate(http_requests_total{namespace="sortie-tracker", route!~"/healthz|/readyz|/metrics", status=~"5.."}[1h]))
+          / sum(rate(http_requests_total{namespace="sortie-tracker", route!~"/healthz|/readyz|/metrics"}[1h]))
+      - record: sortie_tracker:error_ratio:rate6h
+        expr: |
+          sum(rate(http_requests_total{namespace="sortie-tracker", route!~"/healthz|/readyz|/metrics", status=~"5.."}[6h]))
+          / sum(rate(http_requests_total{namespace="sortie-tracker", route!~"/healthz|/readyz|/metrics"}[6h]))
+      - record: sortie_tracker:latency_p95:rate5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{namespace="sortie-tracker", route!~"/healthz|/readyz|/metrics"}[5m])))
+
+  - name: sortie-tracker.alerts
+    rules:
+      - alert: SortieTrackerErrorBudgetFastBurn
+        # 14.4x burn on both a long and a short window: real and still happening.
+        expr: |
+          sortie_tracker:error_ratio:rate1h > (14.4 * 0.01)
+          and sortie_tracker:error_ratio:rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+          team: sortie-tracker
+        annotations:
+          summary: Sortie Tracker is burning its error budget fast
+          description: >-
+            {{ $value | humanizePercentage }} of API requests are failing (SLO allows 1%).
+            At this rate the 30-day error budget is gone in about 2 days.
+          runbook_url: __RUNBOOK_BASE__/high-error-rate.md
+
+      - alert: SortieTrackerErrorBudgetSlowBurn
+        expr: |
+          sortie_tracker:error_ratio:rate6h > (6 * 0.01)
+          and sortie_tracker:error_ratio:rate30m > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: warning
+          team: sortie-tracker
+        annotations:
+          summary: Sortie Tracker error rate is eroding the error budget
+          description: "{{ $value | humanizePercentage }} of API requests failing over 30m/6h windows."
+          runbook_url: __RUNBOOK_BASE__/high-error-rate.md
+
+      - alert: SortieTrackerDatabaseErrors
+        expr: sum(increase(sortie_tracker_db_errors_total{namespace="sortie-tracker"}[5m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+          team: sortie-tracker
+        annotations:
+          summary: Sortie Tracker cannot reach PostgreSQL
+          description: "{{ $value | printf \"%.0f\" }} database errors surfaced to callers in the last 5 minutes."
+          runbook_url: __RUNBOOK_BASE__/db-connectivity.md
+
+      - alert: SortieTrackerHighLatency
+        expr: sortie_tracker:latency_p95:rate5m > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          team: sortie-tracker
+        annotations:
+          summary: Sortie Tracker p95 latency above 500 ms
+          description: "p95 latency is {{ $value | humanizeDuration }}."
+          runbook_url: __RUNBOOK_BASE__/high-latency.md
+
+      - alert: SortieTrackerNoReadyPods
+        expr: kube_deployment_status_replicas_available{namespace="sortie-tracker", deployment="sortie-tracker"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: sortie-tracker
+        annotations:
+          summary: No Sortie Tracker pods are ready; the API is down
+          description: The deployment has 0 available replicas.
+          runbook_url: __RUNBOOK_BASE__/pod-failures.md
+
+      - alert: SortieTrackerRolloutStuck
+        expr: |
+          kube_deployment_status_replicas_updated{namespace="sortie-tracker", deployment="sortie-tracker"}
+          < kube_deployment_spec_replicas{namespace="sortie-tracker", deployment="sortie-tracker"}
+        for: 15m
+        labels:
+          severity: warning
+          team: sortie-tracker
+        annotations:
+          summary: Sortie Tracker rollout has not completed in 15 minutes
+          description: New pods are not becoming ready (bad image, failing migration, OOM?). Old pods are still serving.
+          runbook_url: __RUNBOOK_BASE__/pod-failures.md
+
+      - alert: SortieTrackerCrashLooping
+        expr: sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace="sortie-tracker"}[15m])) > 3
+        labels:
+          severity: warning
+          team: sortie-tracker
+        annotations:
+          summary: "Pod {{ $labels.pod }} restarted more than 3 times in 15 minutes"
+          description: Check `kubectl describe pod` for OOMKilled or failing probes.
+          runbook_url: __RUNBOOK_BASE__/pod-failures.md
+
+      - alert: SortieTrackerBusinessRuleSpike
+        # Not an outage: usually a misbehaving client or a fleet-status data problem.
+        expr: sum by (rule) (rate(sortie_tracker_business_rule_violations_total{namespace="sortie-tracker"}[10m])) > 0.5
+        for: 10m
+        labels:
+          severity: info
+          team: sortie-tracker
+        annotations:
+          summary: "Spike in rejected requests: {{ $labels.rule }}"
+          description: "{{ $value | printf \"%.2f\" }} rejections/s for rule {{ $labels.rule }}."
+          runbook_url: __RUNBOOK_BASE__/business-rule-spike.md

@@ -44,7 +44,7 @@ SKIP_MONITORING=true GATEWAY_READY_CONDITION=Accepted \
 
 log "Starting throwaway PostgreSQL"
 kubectl apply -f "${REPO_ROOT}/deploy/local/postgres.yaml"
-kubectl -n local-db rollout status deploy/postgres --timeout=3m
+kubectl -n local-db rollout status statefulset/postgres --timeout=3m
 
 # Same keys the Key Vault CSI driver would mount in Azure.
 kubectl -n "$NS" create secret generic sortie-tracker-db \
@@ -90,12 +90,20 @@ expect /metrics 404
 expect /readyz 404
 
 log "Checking request ID propagates gateway -> app"
-rid="e2e-$(date +%s)"
-curl -s -o /dev/null -H "X-Request-ID: ${rid}" "http://127.0.0.1:18081/api/v1/aircraft?limit=1"
-sleep 1
-kubectl -n "$NS" logs -l app.kubernetes.io/name=sortie-tracker -c api --tail=200 | grep -q "\"request_id\": \"${rid}\"" \
-  || fail "request ID ${rid} not found in app logs"
-log "  ${rid} found in app logs"
+# Envoy receives policy config a moment after the policy is Accepted; retry briefly.
+found=""
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  rid="e2e-$(date +%s)-${attempt}"
+  curl -s -o /dev/null -H "X-Request-ID: ${rid}" "http://127.0.0.1:18081/api/v1/aircraft?limit=1"
+  sleep 1
+  if kubectl -n "$NS" logs -l app.kubernetes.io/name=sortie-tracker -c api --tail=200 \
+      | grep -q "\"request_id\": \"${rid}\""; then
+    found="$rid"; break
+  fi
+  sleep 2
+done
+[[ -n "$found" ]] || fail "caller-supplied request IDs never reached the app logs"
+log "  ${found} found in app logs"
 
 log "Checking NetworkPolicy blocks unexpected egress"
 if kubectl -n "$NS" exec deploy/sortie-tracker -c api -- \

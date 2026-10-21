@@ -1,0 +1,26 @@
+# Drill 001 run 2 (connect_timeout=2s), re-analyzed from saved logs after the latency-SLI fix
+Window: 2026-10-21T05:48:25.966+00:00 -> 2026-10-21T05:52:38.837+00:00  (app 571 lines, gateway 470, unparsed 4)
+API requests: 479  status {'200': 437, '503': 42}  5xx ratio 8.77%
+Gateway: 470 requests, 43 5xx (0 with no upstream)
+
+FINDINGS
+  [CRITICAL] PostgreSQL unreachable from the API pods
+             42 requests failed with database errors, 40 readiness probe failures between 2026-10-21T05:50:03.629+00:00 and 2026-10-21T05:51:36.710+00:00
+             runbook: docs/runbooks/db-connectivity.md
+  [WARNING ] 5xx ratio 8.8% exceeds the 1% SLO budget (9x burn)
+             42 of 479 API requests failed
+             runbook: docs/runbooks/high-error-rate.md
+
+TOP ERROR SIGNATURES
+      42x ERROR    database_unavailable  OperationalError
+          2026-10-21T05:50:03.629+00:00 .. 2026-10-21T05:51:36.710+00:00  e.g. 3533d8a2-f54e-47eb-871d-607da9126583, traffic-68
+      40x WARNING  readiness_check_failed  OperationalError
+          2026-10-21T05:50:04.233+00:00 .. 2026-10-21T05:51:35.039+00:00  e.g. 72490f3483ec4d92bd092ccacf1e7d6f, 3aa660686d4349558bc0709d1418f601
+       4x UNPARSED non-JSON log lines  INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+           ..   e.g. 
+
+ROUTES
+  route                                        reqs   5xx   4xx   p50ms   p95ms
+  /api/v1/readiness                             160    14     0     7.0    14.1
+  /api/v1/sorties                               160    14     0     6.7    16.2
+  /api/v1/aircraft                              159    14     0     6.1    15.8

@@ -1,17 +1,22 @@
 # Throwaway PostgreSQL for the local kind cluster only (Azure uses the managed
 # Flexible Server). Lives outside the app namespace, which enforces the
 # `restricted` Pod Security profile that the postgres image does not meet.
+#
+# A StatefulSet with a persistent volume, so a restart keeps the data, like
+# the managed service. (An emptyDir here once turned a chaos drill's database
+# restart into silent data loss.)
 apiVersion: v1
 kind: Namespace
 metadata:
   name: local-db
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: postgres
   namespace: local-db
 spec:
+  serviceName: postgres
   replicas: 1
   selector:
     matchLabels:
@@ -31,6 +36,8 @@ spec:
               value: sortie
             - name: POSTGRES_PASSWORD
               value: local-dev-only
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           ports:
             - containerPort: 5432
           readinessProbe:
@@ -40,9 +47,14 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
-      volumes:
-        - name: data
-          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
 ---
 apiVersion: v1
 kind: Service

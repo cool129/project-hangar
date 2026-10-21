@@ -44,6 +44,10 @@ log "Applying shared Gateway"
 kubectl apply -f "${HERE}/gateway.yaml"
 kubectl -n envoy-gateway-system wait gateway/hangar-gateway \
   --for="condition=${GATEWAY_READY_CONDITION}" --timeout=10m
+# Policies are reconciled separately from the Gateway; wait so the first
+# requests already get the request-ID behaviour.
+kubectl -n envoy-gateway-system wait clienttrafficpolicy/hangar-gateway-client \
+  --for='jsonpath={.status.ancestors[0].conditions[?(@.type=="Accepted")].status}=True' --timeout=5m
 
 if [[ "$SKIP_MONITORING" != "true" ]]; then
   # Generate the Grafana admin password once; never stored in git or values.

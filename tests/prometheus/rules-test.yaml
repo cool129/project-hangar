@@ -1,0 +1,119 @@
+# Unit tests for the alert rules:  make alerts-test
+#   promtool test rules tests/prometheus/rules-test.yaml
+rule_files:
+  - ../../deploy/helm/sortie-tracker/files/prometheus-rules.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # Healthy traffic: 10 req/s, 0.1% errors. Nothing should fire.
+  - name: healthy service raises no alerts
+    interval: 30s
+    input_series:
+      - series: 'http_requests_total{namespace="sortie-tracker", route="/api/v1/sorties", status="200"}'
+        values: "0+300x240"
+      - series: 'http_requests_total{namespace="sortie-tracker", route="/api/v1/sorties", status="500"}'
+        values: "0+0.3x240"
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: SortieTrackerErrorBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 2h
+        alertname: SortieTrackerErrorBudgetSlowBurn
+        exp_alerts: []
+
+  # Outage: 50% of requests fail for an hour. Fast burn must page.
+  - name: sustained 50% errors pages via fast burn
+    interval: 30s
+    input_series:
+      - series: 'http_requests_total{namespace="sortie-tracker", route="/api/v1/sorties", status="200"}'
+        values: "0+150x240"
+      - series: 'http_requests_total{namespace="sortie-tracker", route="/api/v1/sorties", status="503"}'
+        values: "0+150x240"
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: SortieTrackerErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: sortie-tracker
+            exp_annotations:
+              summary: Sortie Tracker is burning its error budget fast
+              description: >-
+                50% of API requests are failing (SLO allows 1%).
+                At this rate the 30-day error budget is gone in about 2 days.
+              runbook_url: __RUNBOOK_BASE__/high-error-rate.md
+
+  # Probe traffic must not count toward the SLO: a flapping /readyz is not an outage.
+  - name: readiness probe failures do not burn the error budget
+    interval: 30s
+    input_series:
+      - series: 'http_requests_total{namespace="sortie-tracker", route="/api/v1/sorties", status="200"}'
+        values: "0+300x240"
+      - series: 'http_requests_total{namespace="sortie-tracker", route="/readyz", status="503"}'
+        values: "0+3000x240"
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: SortieTrackerErrorBudgetFastBurn
+        exp_alerts: []
+
+  - name: database errors page after 2 minutes
+    interval: 30s
+    input_series:
+      - series: 'sortie_tracker_db_errors_total{namespace="sortie-tracker", error_type="ConnectionTimeout", pod="p1"}'
+        values: "0 0 0 5 10 15 20 25 30 35 40"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: SortieTrackerDatabaseErrors
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: SortieTrackerDatabaseErrors
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: sortie-tracker
+            exp_annotations:
+              summary: Sortie Tracker cannot reach PostgreSQL
+              description: 40 database errors surfaced to callers in the last 5 minutes.
+              runbook_url: __RUNBOOK_BASE__/db-connectivity.md
+
+  - name: zero available replicas pages
+    interval: 30s
+    input_series:
+      - series: 'kube_deployment_status_replicas_available{namespace="sortie-tracker", deployment="sortie-tracker"}'
+        values: "2 2 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SortieTrackerNoReadyPods
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: sortie-tracker
+              namespace: sortie-tracker
+              deployment: sortie-tracker
+            exp_annotations:
+              summary: No Sortie Tracker pods are ready; the API is down
+              description: The deployment has 0 available replicas.
+              runbook_url: __RUNBOOK_BASE__/pod-failures.md
+
+  - name: slow requests raise a latency warning
+    interval: 1m
+    input_series:
+      # Every request lands in the (0.5, 1.0] bucket: p95 ~ 0.975s.
+      - series: 'http_request_duration_seconds_bucket{namespace="sortie-tracker", route="/api/v1/sorties", le="0.5"}'
+        values: "0+0x30"
+      - series: 'http_request_duration_seconds_bucket{namespace="sortie-tracker", route="/api/v1/sorties", le="1"}'
+        values: "0+60x30"
+      - series: 'http_request_duration_seconds_bucket{namespace="sortie-tracker", route="/api/v1/sorties", le="+Inf"}'
+        values: "0+60x30"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SortieTrackerHighLatency
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              team: sortie-tracker
+            exp_annotations:
+              summary: Sortie Tracker p95 latency above 500 ms
+              description: p95 latency is 975ms.
+              runbook_url: __RUNBOOK_BASE__/high-latency.md

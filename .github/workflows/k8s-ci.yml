@@ -8,6 +8,7 @@ on:
     paths:
       - "deploy/**"
       - "app/**"
+      - "tests/prometheus/**"
       - ".github/workflows/k8s-ci.yml"
   push:
     branches: [main]
@@ -64,6 +65,15 @@ jobs:
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
             rendered/*.yaml deploy/platform/*.yaml deploy/local/postgres.yaml
+
+      - name: Alert rules (promtool check + unit tests)
+        run: |
+          for cmd in "check rules ../../deploy/helm/sortie-tracker/files/prometheus-rules.yaml" \
+                     "test rules rules-test.yaml"; do
+            # shellcheck disable=SC2086  # word-split the promtool sub-command on purpose
+            docker run --rm -v "$PWD:/w:ro" -w /w/tests/prometheus --entrypoint promtool \
+              prom/prometheus:v3.5.0 $cmd
+          done
 
       - name: Checkov (Kubernetes)
         run: |

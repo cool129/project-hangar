@@ -227,6 +227,35 @@ cutover: ## Migrate ENV's legacy data to Azure PG and switch traffic to AKS
 cutover-rollback: ## Send ENV's legacy traffic back to the legacy service
 	bash scripts/cutover.sh rollback $(ENV)
 
+##@ Phase 6 - Observability, chaos and triage
+
+PROMETHEUS_IMAGE := prom/prometheus:v3.5.0
+SINCE ?= 30m
+SCENARIO ?= db-outage
+
+.PHONY: alerts-test
+alerts-test: ## promtool check + unit tests for the SLO alert rules
+	docker run --rm -v "$(CURDIR):/w:ro" -w /w/tests/prometheus --entrypoint promtool $(PROMETHEUS_IMAGE) \
+		check rules ../../deploy/helm/sortie-tracker/files/prometheus-rules.yaml
+	docker run --rm -v "$(CURDIR):/w:ro" -w /w/tests/prometheus --entrypoint promtool $(PROMETHEUS_IMAGE) \
+		test rules rules-test.yaml
+
+.PHONY: scripts-test
+scripts-test: ## ruff + pytest for the ops scripts (analyzer, AI triage)
+	cd scripts && ruff check . && ruff format --check . && python3 -m pytest tests -q
+
+.PHONY: triage
+triage: ## Analyze the current cluster's logs (SINCE=30m); add AI=1 for a Claude draft
+	python3 scripts/log_analyzer.py --kubectl --since $(SINCE) $(if $(AI),--ai,)
+
+.PHONY: chaos
+chaos: ## Inject a failure: make chaos SCENARIO=db-outage ACTION=inject|recover
+	bash scripts/chaos.sh $(SCENARIO) $(ACTION)
+
+.PHONY: chaos-drill-local
+chaos-drill-local: ## Full drill on the kind cluster with saved evidence (SCENARIO=db-outage)
+	bash deploy/local/chaos-drill.sh $(SCENARIO)
+
 ##@ Quality
 
 .PHONY: hooks

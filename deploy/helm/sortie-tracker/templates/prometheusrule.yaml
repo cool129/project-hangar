@@ -1,0 +1,12 @@
+{{- if .Values.prometheusRule.enabled }}
+# SLO recording rules + alerts, unit-tested with promtool (tests/prometheus/).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "sortie-tracker.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sortie-tracker.labels" . | nindent 4 }}
+spec:
+  {{- .Files.Get "files/prometheus-rules.yaml" | replace "__RUNBOOK_BASE__" .Values.prometheusRule.runbookBaseUrl | nindent 2 }}
+{{- end }}

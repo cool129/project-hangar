@@ -32,6 +32,15 @@ def test_environment_overrides_secret_files(tmp_path, monkeypatch):
     assert Settings().db_host == "from-env"
 
 
+def test_database_timeouts_fail_fast_within_probe_budget():
+    """Regression guard from chaos drill 001: the connect timeout must stay below
+    the readiness probe timeout (3s, deploy/helm values) so outages fail fast."""
+    settings = Settings()
+    assert settings.db_connect_timeout < 3
+    assert settings.sqlalchemy_url().query["connect_timeout"] == "2"
+    assert settings.db_pool_timeout <= 5
+
+
 def test_url_enforces_tls_and_hides_password():
     settings = Settings(db_host="db", db_user="u", db_password="p@ss", db_name="sortie_tracker")
     url = settings.sqlalchemy_url()

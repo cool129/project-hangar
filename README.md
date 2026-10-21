@@ -45,7 +45,7 @@ GitHub Actions ──OIDC (no secrets)──▶ Azure
 | 3     | Helm chart + AKS platform add-ons                  | Done        |
 | 4     | GitHub Actions CI/CD                               | Done        |
 | 5     | Ansible + legacy-to-AKS migration                  | Done        |
-| 6     | Monitoring, chaos drills, runbooks, GenAI triage   | Planned     |
+| 6     | Monitoring, chaos drills, runbooks, GenAI triage   | Done        |
 | 7     | Docs, ADRs, demo                                   | Planned     |
 
 ## Quick start (Phase 0)
@@ -67,14 +67,15 @@ settings are documented in [.env.hangar.example](.env.hangar.example).
 
 ## Infrastructure (Phase 1)
 
-Eight Terragrunt units per environment, applied in dependency order:
+Nine Terragrunt units per environment, applied in dependency order:
 
 ```
 foundation ─┬─ network ─┬─ aks ──────┬─ app-identity
             ├─ acr ─────┘            │
             ├─ keyvault ─┬───────────┘
             │            └─ postgres (also needs network)
-            └─ legacy-vm (needs network)
+            ├─ legacy-vm (needs network)
+            └─ alerts (needs aks + postgres)
 ```
 
 | Unit         | Module              | What it builds                                                         |
@@ -87,6 +88,7 @@ foundation ─┬─ network ─┬─ aks ──────┬─ app-identity
 | postgres     | `postgres`          | Private Flexible Server, generated creds stored in Key Vault           |
 | app-identity | `workload_identity` | Managed identity federated to the app's Kubernetes service account     |
 | legacy-vm    | `legacy_vm`         | Ubuntu VM that Ansible turns into the pre-migration deployment         |
+| alerts       | `alerts`            | Azure Monitor alerts: PostgreSQL, node pressure, KQL app-error safety net |
 
 ```bash
 make infra-validate              # terraform validate + terragrunt hcl validate
@@ -249,6 +251,44 @@ converge → **idempotence (changed=0)** → migrate (PASS) → re-run **refused
 a populated target → **one tampered row detected** → cutover → rollback →
 ansible-lint (production profile).
 
+## Operations (Phase 6)
+
+**Detect.** [SLOs](docs/slo.md): 99% availability (30d) and p95 under 500 ms.
+- **Prometheus alerts:** multi-window, multi-burn-rate alerts ship *with the app's chart*
+  (`PrometheusRule`), alongside cause alerts (database errors, no ready pods, stuck rollout,
+  crash loops, business-rule spikes). All of them are **unit-tested with promtool**.
+- **Azure Monitor alerts** (Terraform `alerts` unit): PostgreSQL CPU, storage and failed
+  connections, node pressure, and a KQL log alert that still fires if in-cluster monitoring is down.
+- **Grafana dashboard:** shipped as a labelled ConfigMap, covering SLO and burn rate, RED metrics,
+  mission activity and pods.
+
+**Rehearse.** `scripts/chaos.sh` injects realistic failures, each naming the alert that should
+fire and the runbook that covers it: `bad-image`, `oom`, `db-outage` (NetworkPolicy drift),
+`pod-kill`, `load`, `bad-client`. `deploy/local/chaos-drill.sh` runs a full drill on kind and
+keeps the evidence.
+
+**Triage.** `scripts/log_analyzer.py` (stdlib only) reads app logs, gateway logs and
+Kubernetes events from kubectl, Log Analytics or files. It produces SLO burn, per-route
+latency, grouped error signatures, a gateway-vs-app comparison, rule-based **findings with
+runbook links**, and end-to-end request traces by `X-Request-ID`.
+
+**`--ai`** adds an incident draft from Claude via a **bounded, read-only agent**
+([ADR 0005](docs/adr/0005-genai-incident-triage.md)):
+- it sees only redacted aggregates, never raw logs or secrets
+- three read-only tools, capped at 6 rounds, with schema-constrained output
+- logs are treated as untrusted (prompt-injection resistant), with server-side refusal fallback
+- the output is always labelled as a draft to verify
+
+**Respond.** [Runbooks](docs/runbooks/README.md) for every alert, a postmortem template,
+and a [postmortem from a real drill](docs/drills/postmortem-001-db-outage.md).
+
+```bash
+make alerts-test                 # promtool: 6 alert scenarios
+make scripts-test                # analyzer + AI agent (fake client, no API spend)
+make chaos-drill-local SCENARIO=db-outage
+make triage SINCE=30m AI=1
+```
+
 ## Repository layout
 
 ```
@@ -268,3 +308,4 @@ docs/        architecture, ADRs, runbooks, onboarding guide
 - [ADR 0002: Terragrunt units per component, one state file per unit](docs/adr/0002-terragrunt-unit-layout.md)
 - [ADR 0003: Gateway API for ingress; init-container migrations with an advisory lock](docs/adr/0003-gateway-api-and-migrations.md)
 - [ADR 0004: CI/CD on GitHub Actions: build once, promote by digest, gate prod](docs/adr/0004-ci-cd-pipeline.md)
+- [ADR 0005: GenAI-assisted incident triage as a bounded, read-only agent](docs/adr/0005-genai-incident-triage.md)

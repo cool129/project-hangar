@@ -1,0 +1,12 @@
+# Lint config for operational scripts (stdlib-first, run on operator machines and VMs).
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF", "BLE"]
+
+[lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "E501"]
+
+[lint.isort]
+known-first-party = ["log_analyzer", "ai_triage", "conftest"]

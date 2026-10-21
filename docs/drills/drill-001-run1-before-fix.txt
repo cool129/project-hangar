@@ -1,0 +1,36 @@
+# Drill 001 run 1 (connect_timeout=5s), log_analyzer.py --kubectl output
+Window: 2026-10-21T05:37:50.205+00:00 -> 2026-10-21T05:42:12.563+00:00  (app 552 lines, gateway 464, unparsed 5)
+API requests: 486  status {'200': 468, '503': 18}  5xx ratio 3.70%
+Gateway: 464 requests, 18 5xx (0 with no upstream)
+
+FINDINGS
+  [CRITICAL] PostgreSQL unreachable from the API pods
+             18 requests failed with database errors, 38 readiness probe failures between 2026-10-21T05:39:39.090+00:00 and 2026-10-21T05:41:08.236+00:00
+             runbook: docs/runbooks/db-connectivity.md
+  [WARNING ] 5xx ratio 3.7% exceeds the 1% SLO budget (4x burn)
+             18 of 486 API requests failed
+             runbook: docs/runbooks/high-error-rate.md
+  [WARNING ] Kubernetes reports pod problems
+             Unhealthy=4
+             runbook: docs/runbooks/pod-failures.md
+
+TOP ERROR SIGNATURES
+      38x WARNING  readiness_check_failed  OperationalError
+          2026-10-21T05:39:39.919+00:00 .. 2026-10-21T05:41:08.535+00:00  e.g. 759d2a977efb4a59bc53e5b52b0c6ee8, 99e45dd8932e473cabb8d803abb64c45
+      18x ERROR    database_unavailable  OperationalError
+          2026-10-21T05:39:39.090+00:00 .. 2026-10-21T05:41:08.236+00:00  e.g. traffic-76, a56a290f-588d-4173-bfb8-4d61c3a979c5
+       5x UNPARSED non-JSON log lines  INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+           ..   e.g. 
+
+ROUTES
+  route                                        reqs   5xx   4xx   p50ms   p95ms
+  /api/v1/readiness                             162     6     0     6.5    32.7
+  /api/v1/aircraft                              162     6     0     5.5    25.5
+  /api/v1/sorties                               161     6     0     6.5    21.2
+  unmatched                                       1     0     0     0.7     0.7
+
+KUBERNETES WARNINGS
+  2026-10-21T05:37:51Z Unhealthy        Pod/sortie-tracker-6894ccbd59-6j9vm: Startup probe failed: Get "http://10.244.0.12:8000/healthz": dial tcp 10.244.0.12:8000: connect: connection re
+  2026-10-21T05:41:09Z Unhealthy        Pod/sortie-tracker-6894ccbd59-6j9vm: Readiness probe failed: Get "http://10.244.0.12:8000/readyz": context deadline exceeded (Client.Timeout exceed
+  2026-10-21T05:37:49Z Unhealthy        Pod/sortie-tracker-6894ccbd59-xsq8q: Startup probe failed: Get "http://10.244.0.11:8000/healthz": dial tcp 10.244.0.11:8000: connect: connection re
+  2026-10-21T05:41:06Z Unhealthy        Pod/sortie-tracker-6894ccbd59-xsq8q: Readiness probe failed: Get "http://10.244.0.11:8000/readyz": context deadline exceeded (Client.Timeout exceed

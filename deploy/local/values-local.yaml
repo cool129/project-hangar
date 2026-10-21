@@ -21,5 +21,8 @@ networkPolicy:
   enabled: true
   postgresCidr: 10.244.0.0/16  # kind pod CIDR (postgres runs as a pod here)
 
+# Monitoring stack (and its CRDs) is skipped locally to save memory.
 serviceMonitor:
-  enabled: false  # monitoring stack skipped locally to save memory
+  enabled: false
+prometheusRule:
+  enabled: false

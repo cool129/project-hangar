@@ -71,7 +71,14 @@ class Settings(BaseSettings):
     db_sslmode: str = "require"  # Azure enforces TLS; local compose sets "disable"
     db_pool_size: int = 5
     db_max_overflow: int = 5
-    db_connect_timeout: int = 5
+    # Fail fast when PostgreSQL is unreachable. Keep connect_timeout below the
+    # readiness probe's timeoutSeconds (3s) so the probe gets the app's 503
+    # instead of timing out, and requests fail in ~2s instead of hanging.
+    # (Chaos drill 2026-10-21: at 5s every failed request blocked for 5s and
+    # throughput collapsed 20x; see docs/drills/postmortem-001-db-outage.md.)
+    db_connect_timeout: int = 2
+    # Max wait for a pooled connection; SQLAlchemy's default is 30s.
+    db_pool_timeout: int = 5
 
     @classmethod
     def settings_customise_sources(

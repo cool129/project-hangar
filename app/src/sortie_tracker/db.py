@@ -33,6 +33,7 @@ def build_engine(settings: Settings) -> Engine:
         pool_pre_ping=True,  # survive Azure idle-connection drops and failovers
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
+        pool_timeout=settings.db_pool_timeout,
         pool_recycle=1800,
     )
 

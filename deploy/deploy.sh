@@ -54,8 +54,13 @@ helm upgrade --install "$RELEASE" "$CHART" \
   --set workloadIdentity.clientId="$CLIENT_ID" \
   --set workloadIdentity.tenantId="$TENANT_ID" \
   --rollback-on-failure \
+  --force-conflicts \
   --timeout 10m \
   "$@"
+# --force-conflicts: Helm 4 applies server-side. After a manual `kubectl` change
+# (hotfix, chaos drill) another field manager owns those fields and the
+# upgrade would be refused. Git is the source of truth, so the deploy
+# deliberately reclaims them and reverts the drift.
 
 kubectl -n "$NAMESPACE" rollout status "deployment/${RELEASE}" --timeout=5m
 

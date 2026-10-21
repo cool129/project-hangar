@@ -1,0 +1,15 @@
+{{- if .Values.grafanaDashboard.enabled }}
+# Picked up by the Grafana sidecar (kube-prometheus-stack, searchNamespace: ALL):
+# the app team ships its dashboard with its chart, versioned with the code.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sortie-tracker.fullname" . }}-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sortie-tracker.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+  sortie-tracker.json: |-
+    {{- .Files.Get "files/dashboard.json" | nindent 4 }}
+{{- end }}

@@ -49,6 +49,31 @@ jobs:
           pip install --quiet "pre-commit==${PRE_COMMIT_VERSION}"
           pre-commit run --all-files --show-diff-on-failure
 
+  ops-scripts:
+    name: Ops scripts (analyzer, AI triage)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read  # read the repository
+    defaults:
+      run:
+        working-directory: scripts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      # The AI agent is tested with a scripted fake client: no API key, no spend.
+      - name: Lint and test
+        run: |
+          pip install --quiet "pytest==9.1.1" "ruff==0.17.1"
+          ruff check .
+          ruff format --check .
+          python -m pytest tests -q
+
   workflows:
     name: Workflow lint and security audit
     runs-on: ubuntu-24.04
