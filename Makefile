@@ -203,6 +203,11 @@ k8s-local-down: ## Delete the local kind cluster
 hooks: ## Install git pre-commit hooks
 	pre-commit install
 
+.PHONY: ci-lint
+ci-lint: ## actionlint + zizmor security audit of the GitHub Actions workflows
+	actionlint
+	zizmor --offline --min-severity medium .github/
+
 .PHONY: lint
 lint: ## Run every pre-commit hook against all files
 	pre-commit run --all-files

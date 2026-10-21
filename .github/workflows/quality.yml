@@ -1,0 +1,72 @@
+name: quality
+
+# Repo-wide hygiene on every PR: the same pre-commit hooks developers run
+# locally (secrets, formatting, shell, YAML), plus workflow linting and a
+# GitHub Actions security audit.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pre-commit:
+    name: pre-commit hooks
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read  # read the repository
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0  # gitleaks scans history
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+
+      - name: Install tools
+        run: scripts/ci/install-tools.sh terragrunt
+
+      - name: Run hooks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}  # tflint ruleset download
+        run: |
+          source scripts/ci/tool-versions.env
+          pip install --quiet "pre-commit==${PRE_COMMIT_VERSION}"
+          pre-commit run --all-files --show-diff-on-failure
+
+  workflows:
+    name: Workflow lint and security audit
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read  # read the repository
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install tools
+        run: scripts/ci/install-tools.sh actionlint
+
+      - name: actionlint
+        run: actionlint -color
+
+      - name: zizmor (Actions security audit)
+        run: |
+          source scripts/ci/tool-versions.env
+          pip install --quiet "zizmor==${ZIZMOR_VERSION}"
+          zizmor --offline --min-severity medium .github/

@@ -1,0 +1,134 @@
+name: infra
+
+# PR:   static validation + policy scan, then a plan for dev and prod posted
+#       as a sticky comment on the PR.
+# main: apply dev automatically, then prod after an approval on the `prod`
+#       GitHub Environment.
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra.yml"
+      - ".github/workflows/_terragrunt.yml"
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra.yml"
+      - ".github/workflows/_terragrunt.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: infra-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    name: Validate and scan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read  # read the repository
+      security-events: write  # upload SARIF to code scanning
+    env:
+      # root.hcl requires these; validation never touches real state.
+      AZURE_SUBSCRIPTION_ID: 00000000-0000-0000-0000-000000000000
+      TF_STATE_RG: validate-only
+      TF_STATE_SA: validateonly
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+
+      - name: Install Terragrunt
+        run: scripts/ci/install-tools.sh terragrunt
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff infra/modules
+
+      - name: terraform validate (every module)
+        run: |
+          for m in infra/modules/*/; do
+            echo "::group::${m}"
+            (cd "$m" && terraform init -backend=false -input=false -no-color >/dev/null && terraform validate -no-color)
+            echo "::endgroup::"
+          done
+
+      - name: tflint
+        env:
+          GITHUB_TOKEN: ${{ github.token }}  # avoids rate limits downloading the azurerm ruleset
+        run: |
+          tflint --init --config "$PWD/.tflint.hcl"
+          tflint --recursive --config "$PWD/.tflint.hcl" --chdir infra/modules --format compact
+
+      - name: terragrunt hcl fmt + validate
+        working-directory: infra/live
+        run: |
+          terragrunt hcl fmt --check
+          terragrunt hcl validate
+
+      - name: Checkov (policy as code)
+        run: |
+          source scripts/ci/tool-versions.env
+          pip install --quiet "checkov==${CHECKOV_VERSION}"
+          checkov -d infra/modules --framework terraform --compact \
+            --output cli --output sarif --output-file-path console,reports
+
+      - name: Upload Checkov SARIF
+        if: always() && hashFiles('reports/results_sarif.sarif') != ''
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: reports/results_sarif.sarif
+          category: checkov-terraform
+
+  plan:
+    name: Plan
+    needs: validate
+    # Fork PRs cannot mint OIDC tokens; plans run for same-repo branches only.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+    permissions:
+      contents: read  # read the repository
+      id-token: write  # mint OIDC token for Azure (no stored secrets)
+      pull-requests: write  # post the plan as a PR comment
+    uses: ./.github/workflows/_terragrunt.yml
+    with:
+      environment: ${{ matrix.environment }}
+      command: plan
+
+  apply-dev:
+    name: Apply dev
+    needs: validate
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read  # read the repository
+      id-token: write  # mint OIDC token for Azure (no stored secrets)
+      pull-requests: write  # declared by the reusable workflow; unused on apply
+    uses: ./.github/workflows/_terragrunt.yml
+    with:
+      environment: dev
+      command: apply
+
+  apply-prod:
+    name: Apply prod
+    needs: apply-dev
+    permissions:
+      contents: read  # read the repository
+      id-token: write  # mint OIDC token for Azure (no stored secrets)
+      pull-requests: write  # declared by the reusable workflow; unused on apply
+    uses: ./.github/workflows/_terragrunt.yml
+    with:
+      environment: prod
+      command: apply

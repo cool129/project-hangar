@@ -1,0 +1,124 @@
+name: terragrunt (reusable)
+
+# Runs `terragrunt run --all <plan|apply>` for one environment.
+#   plan:  PR identity (federated subject: pull_request); posts a sticky PR comment
+#   apply: bound to the GitHub Environment (prod requires reviewer approval)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      command:
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  run:
+    name: ${{ inputs.command }} ${{ inputs.environment }}
+    runs-on: ubuntu-24.04
+    # Only applies bind to an Environment; plans use the pull_request subject.
+    environment: ${{ inputs.command == 'apply' && inputs.environment || '' }}
+    permissions:
+      contents: read  # read the repository
+      id-token: write  # mint OIDC token for Azure (no stored secrets)
+      pull-requests: write  # post the plan as a PR comment
+    concurrency:
+      # One Terraform run per environment at a time; state has its own lease too.
+      group: terragrunt-${{ inputs.environment }}
+      cancel-in-progress: false
+    timeout-minutes: 60
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      COMMAND: ${{ inputs.command }}
+      TF_IN_AUTOMATION: "true"
+      TG_NON_INTERACTIVE: "true"
+      TF_STATE_RG: ${{ vars.TF_STATE_RG }}
+      TF_STATE_SA: ${{ vars.TF_STATE_SA }}
+      TF_STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      HANGAR_OPERATOR_OBJECT_ID: ${{ vars.HANGAR_OPERATOR_OBJECT_ID }}
+      HANGAR_CI_OBJECT_ID: ${{ vars.HANGAR_CI_OBJECT_ID }}
+      HANGAR_SSH_PUBLIC_KEY: ${{ vars.HANGAR_SSH_PUBLIC_KEY }}
+      HANGAR_ALLOWED_SSH_CIDRS: ${{ vars.HANGAR_ALLOWED_SSH_CIDRS }}
+      HANGAR_ALERT_EMAILS: ${{ vars.HANGAR_ALERT_EMAILS }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/azure-login
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: scripts/ci/install-tools.sh terragrunt
+
+      - name: terragrunt run --all ${{ inputs.command }}
+        id: tg
+        working-directory: infra/live/${{ inputs.environment }}
+        run: |
+          set -o pipefail
+          mkdir -p "${RUNNER_TEMP}/tg"
+          terragrunt run --all "$COMMAND" -- -no-color -lock-timeout=10m \
+            2>&1 | tee "${RUNNER_TEMP}/tg/output.log"
+
+      - name: Summarize
+        if: always() && steps.tg.outcome != 'skipped'
+        id: summary
+        env:
+          OUTCOME: ${{ steps.tg.outcome }}
+        run: |
+          log="${RUNNER_TEMP}/tg/output.log"
+          # One line per unit: "Plan: x to add...", "No changes.", "Apply complete!" or errors.
+          grep -E "Plan: |No changes\.|Apply complete!|Error: " "$log" \
+            | sed -E 's/^[[:space:]]+//' | sort -u > "${RUNNER_TEMP}/tg/summary.txt" || true
+          {
+            echo "### terragrunt ${COMMAND} — ${ENVIRONMENT} (${OUTCOME})"
+            echo '```'
+            cat "${RUNNER_TEMP}/tg/summary.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment plan on PR
+        if: always() && inputs.command == 'plan' && github.event_name == 'pull_request' && steps.tg.outcome != 'skipped'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OUTCOME: ${{ steps.tg.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const dir = `${process.env.RUNNER_TEMP}/tg`;
+            const env = process.env.ENVIRONMENT;
+            const marker = `<!-- hangar-plan-${env} -->`;
+            const summary = fs.readFileSync(`${dir}/summary.txt`, 'utf8').trim() || '(no plan lines found)';
+            let full = fs.readFileSync(`${dir}/output.log`, 'utf8');
+            const limit = 60000; // GitHub comment limit is 65536 chars
+            if (full.length > limit) full = '…(truncated, see job log)…\n' + full.slice(-limit);
+            const icon = process.env.OUTCOME === 'success' ? '✅' : '❌';
+            const body = [
+              marker,
+              `### ${icon} Terragrunt plan: \`${env}\``,
+              '```', summary, '```',
+              `<details><summary>Full output</summary>\n\n\`\`\`\n${full}\n\`\`\`\n</details>`,
+              `\n_Commit ${context.sha.slice(0, 7)} · [run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})_`,
+            ].join('\n');
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo, issue_number: context.issue.number, per_page: 100,
+            });
+            const existing = comments.find(c => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+            }

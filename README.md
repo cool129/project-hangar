@@ -43,7 +43,7 @@ GitHub Actions ──OIDC (no secrets)──▶ Azure
 | 1     | Terraform modules + Terragrunt environments        | Done        |
 | 2     | Sortie Tracker app + Docker                        | Done        |
 | 3     | Helm chart + AKS platform add-ons                  | Done        |
-| 4     | GitHub Actions CI/CD                               | Planned     |
+| 4     | GitHub Actions CI/CD                               | Done        |
 | 5     | Ansible + legacy-to-AKS migration                  | Planned     |
 | 6     | Monitoring, chaos drills, runbooks, GenAI triage   | Planned     |
 | 7     | Docs, ADRs, demo                                   | Planned     |
@@ -187,6 +187,34 @@ make platform-install            # namespaces, Envoy Gateway, Prometheus/Grafana
 make acr-push deploy ENV=dev     # push image, helm upgrade, smoke test through the gateway
 ```
 
+## CI/CD (Phase 4)
+
+```
+PR      ─▶ quality · app (test, build, Trivy, SBOM) · infra (validate, Checkov, plan → PR comment) · k8s (lint, kind e2e)
+main    ─▶ app:   push dev ACR ─▶ deploy dev ─▶ [approval] ─▶ import same digest to prod ACR ─▶ deploy prod
+           infra: apply dev ─▶ [approval] ─▶ apply prod
+```
+
+- **Passwordless:** GitHub OIDC → Entra ID. Plans run as the PR identity;
+  applies and deploys run as a GitHub Environment (prod requires approval).
+- **Build once, promote by digest:** prod runs the exact bytes that were scanned and tested in dev.
+- **Supply chain:** actions pinned to commit SHAs, tool binaries verified
+  against committed SHA-256s, service images pinned by digest, Dependabot with
+  a 14-day cooldown, CycloneDX SBOM per image, SARIF to GitHub code scanning.
+- **Safe deploys:** Helm `--rollback-on-failure`, smoke test through the
+  gateway (including "`/metrics` must 404"), automatic rollback if smoke fails.
+
+**One-time GitHub setup:**
+1. `SET_GH_VARS=true make bootstrap-oidc` sets the Azure/state repository variables.
+2. Add the repository variables `HANGAR_SSH_PUBLIC_KEY` (legacy VM) and, optionally,
+   `HANGAR_ALLOWED_SSH_CIDRS` and `HANGAR_ALERT_EMAILS`.
+3. Settings → Environments → `prod` → add required reviewers.
+4. Make `main` the default branch and protect it, requiring the `quality`, `app`, `infra` and `k8s` checks.
+
+```bash
+make ci-lint                     # actionlint + zizmor on the workflows
+```
+
 ## Repository layout
 
 ```
@@ -205,3 +233,4 @@ docs/        architecture, ADRs, runbooks, onboarding guide
 - [ADR 0001: GitHub Actions authenticates to Azure with OIDC federation](docs/adr/0001-github-oidc-federation.md)
 - [ADR 0002: Terragrunt units per component, one state file per unit](docs/adr/0002-terragrunt-unit-layout.md)
 - [ADR 0003: Gateway API for ingress; init-container migrations with an advisory lock](docs/adr/0003-gateway-api-and-migrations.md)
+- [ADR 0004: CI/CD on GitHub Actions: build once, promote by digest, gate prod](docs/adr/0004-ci-cd-pipeline.md)

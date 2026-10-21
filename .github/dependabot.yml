@@ -1,0 +1,44 @@
+# Automated dependency updates. Actions stay pinned to commit SHAs; Dependabot
+# bumps the SHA and its version comment together. A 14-day cooldown avoids
+# adopting a release before the community has had time to spot a compromise.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directories: ["/", "/.github/actions/*"]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /app
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    groups:
+      runtime:
+        dependency-type: production
+      dev:
+        dependency-type: development
+
+  - package-ecosystem: docker
+    directory: /app
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+
+  - package-ecosystem: terraform
+    directories: ["/infra/modules/*"]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    groups:
+      providers:
+        patterns: ["*"]

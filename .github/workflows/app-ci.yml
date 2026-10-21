@@ -1,0 +1,198 @@
+name: app
+
+# Build once, promote everywhere: the image is built and scanned here, pushed
+# to the dev registry by digest, deployed to dev, then the SAME digest is
+# imported into prod behind a manual approval.
+
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - ".github/workflows/app-ci.yml"
+      - ".github/workflows/deploy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "deploy/helm/**"
+      - ".github/workflows/app-ci.yml"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: app-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_VERSION: "3.13"
+  IMAGE_NAME: sortie-tracker
+
+jobs:
+  test:
+    name: Lint and test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read  # read the repository
+    defaults:
+      run:
+        working-directory: app
+    services:
+      postgres:
+        # Pinned by digest like every other dependency; bump alongside app/docker-compose.yml.
+        image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+        env:
+          POSTGRES_DB: sortie_tracker
+          POSTGRES_USER: sortie
+          POSTGRES_PASSWORD: ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sortie -d sortie_tracker"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install
+        run: pip install -c constraints.txt -e '.[dev]'
+
+      - name: Ruff
+        run: |
+          ruff check --output-format=github .
+          ruff format --check .
+
+      - name: Unit tests
+        run: >-
+          pytest -m "not integration"
+          --cov --cov-report=term-missing:skip-covered --cov-report=xml:reports/coverage.xml
+          --junitxml=reports/unit.xml
+
+      - name: Integration tests (PostgreSQL 16)
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://sortie:ci-only@127.0.0.1:5432/sortie_tracker?connect_timeout=5
+        run: pytest -m integration --junitxml=reports/integration.xml
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-reports
+          path: app/reports/
+          retention-days: 14
+
+  build:
+    name: Build, scan and publish image
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read  # read the repository
+      id-token: write  # Azure OIDC (main only)
+      security-events: write  # upload Trivy SARIF to code scanning
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Image metadata
+        id: meta
+        run: echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: docker build --build-arg GIT_SHA="$TAG" -t "${IMAGE_NAME}:${TAG}" app
+
+      - name: Install Trivy (pinned, checksum-verified)
+        run: scripts/ci/install-tools.sh trivy
+
+      - name: Vulnerability gate (fixable HIGH/CRITICAL)
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "${IMAGE_NAME}:${TAG}"
+
+      - name: Full report (SARIF) and SBOM (CycloneDX)
+        if: always()
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          mkdir -p reports
+          trivy image --format sarif --output reports/trivy.sarif "${IMAGE_NAME}:${TAG}"
+          trivy image --format cyclonedx --output reports/sbom.cdx.json "${IMAGE_NAME}:${TAG}"
+
+      - name: Upload SARIF to code scanning
+        if: always() && hashFiles('reports/trivy.sarif') != ''
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: reports/trivy.sarif
+          category: trivy-image
+
+      - name: Upload SBOM
+        if: always() && hashFiles('reports/sbom.cdx.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ steps.meta.outputs.tag }}
+          path: reports/sbom.cdx.json
+          retention-days: 90
+
+      - name: Azure login
+        if: github.event_name != 'pull_request'
+        uses: ./.github/actions/azure-login
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Push to dev registry
+        id: push
+        if: github.event_name != 'pull_request'
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          acr="$(az acr list -g rg-hangar-dev --query '[0].loginServer' -o tsv)"
+          [[ -n "$acr" ]] || { echo "::error::No ACR in rg-hangar-dev. Apply infra first."; exit 1; }
+          az acr login --name "${acr%%.*}"
+          docker tag "${IMAGE_NAME}:${TAG}" "${acr}/${IMAGE_NAME}:${TAG}"
+          docker push "${acr}/${IMAGE_NAME}:${TAG}"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "${acr}/${IMAGE_NAME}:${TAG}" | cut -d@ -f2)"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Image published"
+            echo "\`${acr}/${IMAGE_NAME}:${TAG}\`"
+            echo "digest: \`${digest}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-dev:
+    name: Deploy dev
+    needs: build
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read  # read the repository
+      id-token: write  # mint OIDC token for Azure (no stored secrets)
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: dev
+      tag: ${{ needs.build.outputs.tag }}
+      digest: ${{ needs.build.outputs.digest }}
+
+  deploy-prod:
+    name: Deploy prod
+    needs: [build, deploy-dev]
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read  # read the repository
+      id-token: write  # mint OIDC token for Azure (no stored secrets)
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: prod
+      tag: ${{ needs.build.outputs.tag }}
+      digest: ${{ needs.build.outputs.digest }}

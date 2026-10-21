@@ -1,0 +1,42 @@
+name: Azure login (OIDC)
+description: >
+  Exchanges the job's GitHub OIDC token for an Entra ID token (no secrets) and
+  exports ARM_* variables so Terraform/Terragrunt authenticate the same way.
+  The calling job needs `permissions: id-token: write`.
+
+inputs:
+  client-id:
+    description: App registration (sp-hangar-github) client ID.
+    required: true
+  tenant-id:
+    description: Entra ID tenant ID.
+    required: true
+  subscription-id:
+    description: Azure subscription ID.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Azure CLI login
+      uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+      with:
+        client-id: ${{ inputs.client-id }}
+        tenant-id: ${{ inputs.tenant-id }}
+        subscription-id: ${{ inputs.subscription-id }}
+
+    - name: Export Terraform OIDC settings
+      shell: bash
+      env:
+        CLIENT_ID: ${{ inputs.client-id }}
+        TENANT_ID: ${{ inputs.tenant-id }}
+        SUBSCRIPTION_ID: ${{ inputs.subscription-id }}
+      run: |
+        {
+          echo "ARM_USE_OIDC=true"
+          echo "ARM_USE_AZUREAD=true"
+          echo "ARM_CLIENT_ID=${CLIENT_ID}"
+          echo "ARM_TENANT_ID=${TENANT_ID}"
+          echo "ARM_SUBSCRIPTION_ID=${SUBSCRIPTION_ID}"
+          echo "AZURE_SUBSCRIPTION_ID=${SUBSCRIPTION_ID}"
+        } >> "$GITHUB_ENV"

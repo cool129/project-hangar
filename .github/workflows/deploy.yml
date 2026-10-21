@@ -1,0 +1,138 @@
+name: deploy
+
+# Reusable deployment, also runnable by hand (e.g. redeploy or roll forward).
+# The job is bound to a GitHub Environment, so:
+#   - only that environment's federated credential can mint an Azure token
+#   - prod waits for the required reviewers configured on the `prod` environment
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      tag:
+        type: string
+        required: true
+      digest:
+        type: string
+        required: false
+        default: ""
+  # checkov:skip=CKV_GHA_7:Deploy workflow, not a build; inputs only select an already-built, scanned image and are regex-validated.
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, prod]
+        required: true
+      tag:
+        description: Image tag (short git SHA) already in the dev registry
+        type: string
+        required: true
+      digest:
+        description: Optional sha256 digest; pins the exact image
+        type: string
+        required: false
+        default: ""
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.tag }} to ${{ inputs.environment }}
+    runs-on: ubuntu-24.04
+    environment:
+      name: ${{ inputs.environment }}
+    permissions:
+      contents: read  # read the repository
+      id-token: write  # mint OIDC token for Azure (no stored secrets)
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false   # never interrupt a rollout midway
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      TAG: ${{ inputs.tag }}
+      DIGEST: ${{ inputs.digest }}
+      TF_STATE_RG: ${{ vars.TF_STATE_RG }}
+      TF_STATE_SA: ${{ vars.TF_STATE_SA }}
+      TF_STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs
+        run: |
+          [[ "$TAG" =~ ^[0-9a-f]{7,40}$ ]] || { echo "::error::tag must be a git SHA"; exit 1; }
+          [[ -z "$DIGEST" || "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::bad digest"; exit 1; }
+
+      - uses: ./.github/actions/azure-login
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install tools
+        run: scripts/ci/install-tools.sh terragrunt
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.5
+          terraform_wrapper: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.0
+
+      - uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
+        with:
+          version: v1.34.12
+
+      - uses: azure/use-kubelogin@0ce7c36141aa27d4934872cf00b0120804c98a29 # v1.3
+        with:
+          kubelogin-version: v0.2.20
+
+      - name: Promote image to prod registry (same digest)
+        if: inputs.environment == 'prod'
+        run: |
+          src="$(az acr list -g rg-hangar-dev --query '[0].loginServer' -o tsv)"
+          dst="$(az acr list -g rg-hangar-prod --query '[0].name' -o tsv)"
+          ref="sortie-tracker@${DIGEST}"
+          [[ -n "$DIGEST" ]] || ref="sortie-tracker:${TAG}"
+          # Server-side copy: the bits that passed dev are the bits that run in prod.
+          az acr import --name "$dst" --source "${src}/${ref}" \
+            --image "sortie-tracker:${TAG}" --force
+          echo "Promoted ${src}/${ref} -> ${dst}/sortie-tracker:${TAG}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: AKS credentials (Entra ID via kubelogin)
+        run: |
+          az aks get-credentials -g "rg-hangar-${ENVIRONMENT}" -n "aks-hangar-${ENVIRONMENT}" --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+      - name: Helm deploy + smoke test
+        id: deploy
+        run: |
+          extra=()
+          [[ -n "$DIGEST" ]] && extra+=(--set "image.digest=${DIGEST}")
+          deploy/deploy.sh "$ENVIRONMENT" "$TAG" "${extra[@]}"
+
+      - name: Roll back on failed smoke test
+        if: failure() && steps.deploy.outcome == 'failure'
+        run: |
+          # --rollback-on-failure covers failed rollouts; this covers a rollout
+          # that succeeded but failed the smoke test.
+          if [[ "$(helm history sortie-tracker -n sortie-tracker -o json | jq length)" -gt 1 ]]; then
+            helm rollback sortie-tracker 0 -n sortie-tracker --wait --timeout 5m
+            echo "::warning::Rolled back ${ENVIRONMENT} to the previous release"
+          fi
+
+      - name: Summary
+        if: success()
+        run: |
+          ip="$(kubectl -n envoy-gateway-system get gateway hangar-gateway -o jsonpath='{.status.addresses[0].value}')"
+          {
+            echo "### Deployed \`${TAG}\` to **${ENVIRONMENT}**"
+            echo "- API docs: http://${ip}/docs"
+            echo "- Readiness: http://${ip}/api/v1/readiness"
+          } >> "$GITHUB_STEP_SUMMARY"
