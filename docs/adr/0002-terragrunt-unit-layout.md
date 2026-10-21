@@ -22,7 +22,8 @@ infra/
     <env>/<unit>/terragrunt.hcl   two include blocks, identical across environments
 ```
 
-Units: `foundation → network, acr, keyvault → aks, postgres, legacy-vm → app-identity`.
+Units: `foundation → network, acr, keyvault → aks, postgres, legacy-vm → app-identity, alerts`
+(`alerts` was added in Phase 6; adding a unit touched no existing unit, which is the layout working as intended).
 
 - **One state file per unit** (`<env>/<unit>/terraform.tfstate`): a bad AKS change
   can't corrupt network state, and plans touch only what changed.

@@ -58,3 +58,6 @@ reports/
 .idea/
 .DS_Store
 Thumbs.db
+
+# --- Personal (kept local, never committed) ---
+docs/interview-notes.md
