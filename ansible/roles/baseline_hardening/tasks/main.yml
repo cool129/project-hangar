@@ -1,0 +1,121 @@
+# CIS-style baseline for Ubuntu 24.04: patching, SSH, kernel network
+# parameters, audit logging, host firewall and a consent banner.
+
+# Images that delete /var/lib/apt/lists keep apt's "cache is fresh" stamp, so
+# cache_valid_time alone would skip the refresh and find no packages.
+- name: Check for apt package lists
+  ansible.builtin.find:
+    paths: /var/lib/apt/lists
+    patterns: "*_Packages*"
+  register: baseline_hardening_apt_lists
+
+- name: Refresh apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: "{{ 0 if baseline_hardening_apt_lists.matched == 0 else 3600 }}"
+
+- name: Apply pending updates
+  ansible.builtin.apt:
+    upgrade: safe
+    update_cache: true
+    cache_valid_time: 3600
+  when: baseline_hardening_apply_updates
+
+- name: Install baseline security packages
+  ansible.builtin.apt:
+    name: >-
+      {{ ['unattended-upgrades']
+         + (['auditd'] if baseline_hardening_auditd_enabled else [])
+         + (['ufw'] if baseline_hardening_firewall_enabled else []) }}
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Remove legacy cleartext network clients
+  ansible.builtin.apt:
+    name: "{{ baseline_hardening_absent_packages }}"
+    state: absent
+    purge: true
+
+- name: Enable unattended security upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      // Managed by Ansible (baseline_hardening)
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Set login banners
+  ansible.builtin.copy:
+    dest: "{{ item }}"
+    content: "{{ baseline_hardening_login_banner }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - /etc/issue
+    - /etc/issue.net
+
+- name: Harden SSH daemon
+  ansible.builtin.template:
+    src: sshd-hardening.conf.j2
+    # 01- sorts first; sshd uses the first value it reads for each keyword.
+    dest: /etc/ssh/sshd_config.d/01-hangar-hardening.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Reload ssh
+
+- name: Apply kernel network and memory protections
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/60-hangar-hardening.conf
+    reload: true
+  loop: "{{ baseline_hardening_sysctl | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: baseline_hardening_sysctl_enabled
+
+- name: Install audit rules
+  ansible.builtin.copy:
+    src: hangar.rules
+    dest: /etc/audit/rules.d/hangar.rules
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Load audit rules
+  when: baseline_hardening_auditd_enabled
+
+- name: Ensure auditd is running
+  ansible.builtin.systemd_service:
+    name: auditd
+    state: started
+    enabled: true
+  when: baseline_hardening_auditd_enabled
+
+- name: Configure host firewall
+  when: baseline_hardening_firewall_enabled
+  block:
+    - name: Allow SSH
+      community.general.ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+        from_ip: "{{ item }}"
+        comment: ssh
+      loop: "{{ baseline_hardening_ssh_allowed_cidrs }}"
+
+    - name: Deny all other inbound traffic by default
+      community.general.ufw:
+        state: enabled
+        direction: incoming
+        policy: deny
+
+- name: Flush handlers so SSH changes apply before later roles
+  ansible.builtin.meta: flush_handlers

@@ -1,0 +1,86 @@
+name: ansible
+
+# Every change to the roles, playbooks or migration tooling re-runs the full
+# migration rehearsal: converge -> idempotence -> migrate -> refuse re-run ->
+# tamper detection -> cutover -> rollback, against local stand-ins for Azure.
+
+on:
+  pull_request:
+    paths:
+      - "ansible/**"
+      - "scripts/migrate_db.py"
+      - "scripts/cutover.sh"
+      - "app/**"
+      - ".github/workflows/ansible.yml"
+  push:
+    branches: [main]
+    paths:
+      - "ansible/**"
+      - "scripts/migrate_db.py"
+      - ".github/workflows/ansible.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ansible-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: ansible-lint
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read  # read the repository
+    defaults:
+      run:
+        working-directory: ansible
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned Ansible + collections
+        run: |
+          pip install -r requirements.txt
+          ansible-galaxy collection install -r requirements.yml -p .collections
+
+      - name: ansible-lint (production profile)
+        run: ansible-lint
+
+      - name: Syntax check playbooks
+        run: |
+          for pb in playbooks/*.yml; do
+            ansible-playbook --syntax-check -i tests/inventory.yml "$pb"
+          done
+
+  rehearsal:
+    name: Migration rehearsal
+    needs: lint
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read  # read the repository
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build app image (the "new platform" stand-in)
+        run: docker build --build-arg GIT_SHA="${GITHUB_SHA::7}" -t sortie-tracker:local app
+
+      - name: Run rehearsal
+        run: ansible/tests/rehearsal.sh
+
+      - name: Upload migration reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: migration-rehearsal-reports
+          path: ansible/tests/.out/reports/
+          if-no-files-found: ignore
+          retention-days: 30

@@ -1,0 +1,34 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Sortie Tracker API (legacy deployment)
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=exec
+User={{ app_user }}
+Group={{ app_user }}
+WorkingDirectory={{ legacy_app_release_dir }}
+EnvironmentFile={{ legacy_app_config_dir }}/sortie-tracker.env
+ExecStartPre={{ legacy_app_venv }}/bin/alembic upgrade head
+ExecStart={{ legacy_app_venv }}/bin/uvicorn sortie_tracker.main:app --host 0.0.0.0 --port {{ app_port }} --no-access-log
+Restart=on-failure
+RestartSec=5
+
+# Sandboxing: the service can read its release and talk to the network, nothing else.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

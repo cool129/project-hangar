@@ -43,6 +43,10 @@ build/
 # --- Ansible ---
 *.retry
 ansible/.vault_pass*
+ansible/.collections/
+ansible/.credentials/
+ansible/tests/.work/
+ansible/tests/.out/
 
 # --- Reports / artifacts ---
 reports/

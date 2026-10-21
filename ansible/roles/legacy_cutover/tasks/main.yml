@@ -1,0 +1,100 @@
+- name: Validate cutover parameters
+  ansible.builtin.assert:
+    that:
+      - legacy_cutover_state in ['proxy', 'legacy']
+      - legacy_cutover_state == 'legacy' or legacy_cutover_upstream_url is match('^https?://')
+    fail_msg: "legacy_cutover_state must be proxy|legacy; proxy needs legacy_cutover_upstream_url (http[s]://...)"
+    quiet: true
+
+- name: Cut over to the new platform
+  when: legacy_cutover_state == 'proxy'
+  block:
+    - name: Install nginx
+      ansible.builtin.apt:
+        name: nginx-light
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Remove the default nginx site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Configure reverse proxy to the new platform
+      ansible.builtin.template:
+        src: cutover-proxy.conf.j2
+        dest: /etc/nginx/sites-enabled/sortie-tracker-cutover.conf
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Validate nginx configuration
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    # Order matters: free the port, then take it over.
+    - name: Stop and disable the legacy service
+      ansible.builtin.systemd_service:
+        name: sortie-tracker
+        state: stopped
+        enabled: false
+
+    - name: Start nginx
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: restarted
+        enabled: true
+
+    - name: Verify traffic is now served by the new platform
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ app_port }}/healthz"
+        return_content: true
+      register: legacy_cutover_health
+      until: legacy_cutover_health.status == 200 and legacy_cutover_health.json.environment != 'legacy'
+      retries: 15
+      delay: 2
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          Cutover complete: {{ inventory_hostname }}:{{ app_port }} now proxies to
+          {{ legacy_cutover_upstream_url }} (environment={{ legacy_cutover_health.json.environment }},
+          commit={{ legacy_cutover_health.json.commit }}).
+
+- name: Roll back to the legacy service
+  when: legacy_cutover_state == 'legacy'
+  block:
+    - name: Remove proxy site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/sortie-tracker-cutover.conf
+        state: absent
+
+    - name: Stop nginx
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: stopped
+        enabled: false
+      failed_when: false  # nginx may never have been installed
+
+    - name: Start and enable the legacy service
+      ansible.builtin.systemd_service:
+        name: sortie-tracker
+        state: started
+        enabled: true
+
+    - name: Verify the legacy service is answering
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ app_port }}/readyz"
+        return_content: true
+      register: legacy_cutover_rollback_ready
+      until: legacy_cutover_rollback_ready.status == 200
+      retries: 30
+      delay: 2
+
+    - name: Confirm it is the legacy deployment
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ app_port }}/healthz"
+        return_content: true
+      register: legacy_cutover_rollback_health
+      failed_when: legacy_cutover_rollback_health.json.environment != 'legacy'

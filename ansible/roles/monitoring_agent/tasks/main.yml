@@ -1,0 +1,32 @@
+- name: Install Prometheus node exporter
+  ansible.builtin.apt:
+    name: prometheus-node-exporter
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Bind node exporter to the private interface
+  ansible.builtin.copy:
+    dest: /etc/default/prometheus-node-exporter
+    content: |
+      # Managed by Ansible (monitoring_agent)
+      ARGS="--web.listen-address={{ monitoring_agent_listen_address }}:{{ monitoring_agent_node_exporter_port }} --collector.systemd"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node exporter
+
+- name: Allow metrics scraping from the VNet
+  community.general.ufw:
+    rule: allow
+    port: "{{ monitoring_agent_node_exporter_port | string }}"
+    proto: tcp
+    from_ip: "{{ vnet_cidr }}"
+    comment: node-exporter
+  when: baseline_hardening_firewall_enabled | default(true)
+
+- name: Ensure node exporter is running
+  ansible.builtin.systemd_service:
+    name: prometheus-node-exporter
+    state: started
+    enabled: true

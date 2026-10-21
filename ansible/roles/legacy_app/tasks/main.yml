@@ -1,0 +1,141 @@
+- name: Install PostgreSQL 16 and Python runtime
+  ansible.builtin.apt:
+    name:
+      - postgresql-16
+      - postgresql-client-16
+      - python3-venv
+      - python3-psycopg2  # used by community.postgresql modules
+      - python3-psycopg   # used by migrate_db.py
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure PostgreSQL is running
+  ansible.builtin.systemd_service:
+    name: postgresql
+    state: started
+    enabled: true
+
+- name: Create application database role
+  community.postgresql.postgresql_user:
+    name: "{{ legacy_app_db_user }}"
+    password: "{{ legacy_app_db_password }}"
+  become: true
+  become_user: postgres
+  no_log: true
+
+- name: Create application database
+  community.postgresql.postgresql_db:
+    name: "{{ legacy_app_db_name }}"
+    owner: "{{ legacy_app_db_user }}"
+    encoding: UTF8
+  become: true
+  become_user: postgres
+
+- name: Create service account
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    system: true
+    home: "{{ app_home }}"
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Create application directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ app_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ app_home }}", owner: root, mode: "0755" }
+    - { path: "{{ legacy_app_release_dir }}", owner: root, mode: "0755" }
+    - { path: "{{ legacy_app_config_dir }}", owner: root, mode: "0750" }
+
+- name: Copy application release
+  ansible.builtin.copy:
+    src: "{{ legacy_app_source_dir }}/{{ item }}"
+    dest: "{{ legacy_app_release_dir }}/"
+    owner: root
+    group: root
+    mode: u=rwX,g=rX,o=rX
+  loop:
+    - pyproject.toml
+    - constraints.txt
+    - alembic.ini
+    - src
+    - migrations
+  notify: Reinstall application
+
+- name: Create virtualenv
+  ansible.builtin.command:
+    cmd: python3 -m venv {{ legacy_app_venv }}
+    creates: "{{ legacy_app_venv }}/bin/python"
+
+# Later upgrades run through the "Reinstall application" handler, triggered
+# only when release files change, so repeat runs report no changes.
+- name: Install application with pinned dependencies (first run)
+  ansible.builtin.command:
+    cmd: >-
+      {{ legacy_app_venv }}/bin/pip install --disable-pip-version-check
+      -c {{ legacy_app_release_dir }}/constraints.txt {{ legacy_app_release_dir }}
+    creates: "{{ legacy_app_venv }}/bin/uvicorn"
+
+- name: Write application environment file
+  ansible.builtin.template:
+    src: sortie-tracker.env.j2
+    dest: "{{ legacy_app_config_dir }}/sortie-tracker.env"
+    owner: root
+    group: "{{ app_user }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart sortie-tracker
+
+- name: Install systemd unit
+  ansible.builtin.template:
+    src: sortie-tracker.service.j2
+    dest: /etc/systemd/system/sortie-tracker.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart sortie-tracker
+
+- name: Allow application port from the VNet
+  community.general.ufw:
+    rule: allow
+    port: "{{ app_port | string }}"
+    proto: tcp
+    from_ip: "{{ vnet_cidr }}"
+    comment: sortie-tracker
+  when: baseline_hardening_firewall_enabled | default(true)
+
+- name: Apply pending handlers before starting the service
+  ansible.builtin.meta: flush_handlers
+
+- name: Start sortie-tracker
+  ansible.builtin.systemd_service:
+    name: sortie-tracker
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for the API to become ready
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ app_port }}/readyz"
+  register: legacy_app_ready
+  until: legacy_app_ready.status == 200
+  retries: 30
+  delay: 2
+
+- name: Seed squadron data (first run only)
+  ansible.builtin.shell: |
+    set -a
+    . {{ legacy_app_config_dir }}/sortie-tracker.env
+    exec {{ legacy_app_venv }}/bin/sortie-tracker-seed --if-empty \
+      --aircraft {{ legacy_app_seed_aircraft }} --sorties {{ legacy_app_seed_sorties }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: "{{ app_user }}"
+  register: legacy_app_seed
+  changed_when: "'seed_complete' in legacy_app_seed.stdout"

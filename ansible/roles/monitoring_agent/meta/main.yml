@@ -1,0 +1,12 @@
+galaxy_info:
+  role_name: monitoring_agent
+  namespace: hangar
+  author: Project HANGAR platform team
+  description: Prometheus node exporter bound to the private interface.
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies: []

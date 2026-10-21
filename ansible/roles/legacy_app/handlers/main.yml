@@ -1,0 +1,13 @@
+- name: Reinstall application
+  ansible.builtin.command:
+    cmd: >-
+      {{ legacy_app_venv }}/bin/pip install --disable-pip-version-check --force-reinstall --no-deps
+      {{ legacy_app_release_dir }}
+  changed_when: true
+  notify: Restart sortie-tracker
+
+- name: Restart sortie-tracker
+  ansible.builtin.systemd_service:
+    name: sortie-tracker
+    state: restarted
+    daemon_reload: true

@@ -1,0 +1,28 @@
+# {{ ansible_managed }}
+# SSH hardening. Algorithms are restricted to FIPS 140-approved families
+# (AES-GCM/CTR, HMAC-SHA2, NIST ECDH/DH group exchange), as DoD STIGs require.
+
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PubkeyAuthentication yes
+AllowGroups {{ baseline_hardening_ssh_allow_groups | join(' ') }}
+
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+PermitTunnel no
+PermitUserEnvironment no
+
+MaxAuthTries 3
+MaxSessions 10
+LoginGraceTime 30
+ClientAliveInterval 300
+ClientAliveCountMax 2
+LogLevel VERBOSE
+Banner /etc/issue.net
+
+KexAlgorithms ecdh-sha2-nistp384,ecdh-sha2-nistp256,diffie-hellman-group-exchange-sha256,diffie-hellman-group16-sha512
+Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512,hmac-sha2-256

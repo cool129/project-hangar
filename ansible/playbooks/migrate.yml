@@ -1,0 +1,113 @@
+# Migrates the legacy database to Azure Database for PostgreSQL and verifies it.
+#
+# Runs ON the legacy VM: it is the one machine that can reach both the local
+# database and the private Flexible Server endpoint inside the VNet.
+#
+# Target connection comes from environment variables on the control node so
+# credentials never touch git, inventory or command lines. scripts/cutover.sh
+# reads them from Key Vault:
+#   MIGRATION_TARGET_HOST, MIGRATION_TARGET_DATABASE,
+#   MIGRATION_TARGET_USER, MIGRATION_TARGET_PASSWORD, [MIGRATION_TARGET_SSLMODE]
+#
+#   ansible-playbook playbooks/migrate.yml -l env_dev
+#   ansible-playbook playbooks/migrate.yml -l env_dev -e migration_validate_only=true
+- name: Migrate legacy database to the managed PostgreSQL target
+  hosts: role_legacy_app
+  become: true
+  vars_files:
+    - ../roles/legacy_app/defaults/main.yml  # source DB name/user/password lookup
+  vars:
+    migration_freeze_source: true
+    migration_validate_only: false
+    migration_remote_dir: /var/lib/sortie-tracker/migration/{{ migration_run_id }}
+    migration_local_report_dir: "{{ playbook_dir }}/../../reports/migration"
+    migration_target:
+      host: "{{ lookup('ansible.builtin.env', 'MIGRATION_TARGET_HOST') }}"
+      database: "{{ lookup('ansible.builtin.env', 'MIGRATION_TARGET_DATABASE', default='sortie_tracker') }}"
+      user: "{{ lookup('ansible.builtin.env', 'MIGRATION_TARGET_USER') }}"
+      password: "{{ lookup('ansible.builtin.env', 'MIGRATION_TARGET_PASSWORD') }}"
+      sslmode: "{{ lookup('ansible.builtin.env', 'MIGRATION_TARGET_SSLMODE', default='require') }}"
+  tasks:
+    - name: Fix the run ID once (a lazy template would change per task)
+      ansible.builtin.set_fact:
+        migration_run_id: "{{ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}"
+
+    - name: Check target connection settings are present
+      ansible.builtin.assert:
+        that:
+          - migration_target.host | length > 0
+          - migration_target.user | length > 0
+          - migration_target.password | length > 0
+        fail_msg: Set MIGRATION_TARGET_HOST/USER/PASSWORD (scripts/cutover.sh does this from Key Vault).
+        quiet: true
+      no_log: true
+
+    - name: Install migration tool
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../scripts/migrate_db.py"
+        dest: "{{ app_home }}/migrate_db.py"
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create run directory
+      ansible.builtin.file:
+        path: "{{ migration_remote_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Migrate (legacy service is restarted if anything fails)
+      block:
+        - name: Freeze writes by stopping the legacy service
+          ansible.builtin.systemd_service:
+            name: sortie-tracker
+            state: stopped
+          when: migration_freeze_source and not migration_validate_only
+
+        - name: Run migrate_db.py
+          ansible.builtin.command:
+            argv: >-
+              {{ ['/usr/bin/python3', app_home ~ '/migrate_db.py', '--report-dir', migration_remote_dir]
+                 + (['--validate-only'] if migration_validate_only else []) }}
+          environment:
+            # Credentials are URL-encoded: Key Vault passwords contain reserved characters.
+            SOURCE_DATABASE_URL: >-
+              {{ 'postgresql://' ~ legacy_app_db_user ~ ':' ~ (legacy_app_db_password | urlencode)
+                 ~ '@127.0.0.1:5432/' ~ legacy_app_db_name ~ '?sslmode=disable' }}
+            TARGET_DATABASE_URL: >-
+              {{ 'postgresql://' ~ (migration_target.user | urlencode) ~ ':' ~ (migration_target.password | urlencode)
+                 ~ '@' ~ migration_target.host ~ ':5432/' ~ migration_target.database
+                 ~ '?sslmode=' ~ migration_target.sslmode }}
+          register: migration_result
+          changed_when: not migration_validate_only
+
+      rescue:
+        - name: Restore service on the legacy host after a failed migration
+          ansible.builtin.systemd_service:
+            name: sortie-tracker
+            state: started
+          when: migration_freeze_source and not migration_validate_only
+
+        - name: Fail with the migration output
+          ansible.builtin.fail:
+            msg: |
+              Migration failed (rc={{ migration_result.rc | default('n/a') }}). Legacy service restored.
+              {{ migration_result.stdout | default('') }}
+              {{ migration_result.stderr | default('') }}
+
+      always:
+        - name: Collect migration report
+          ansible.builtin.fetch:
+            src: "{{ migration_remote_dir }}/{{ item }}"
+            dest: "{{ migration_local_report_dir }}/{{ migration_run_id }}/"
+            flat: true
+            fail_on_missing: false
+          loop:
+            - report.json
+            - report.md
+
+    - name: Show result
+      ansible.builtin.debug:
+        msg: "{{ migration_result.stdout_lines | default([]) }}"

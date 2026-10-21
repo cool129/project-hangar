@@ -44,7 +44,7 @@ GitHub Actions ──OIDC (no secrets)──▶ Azure
 | 2     | Sortie Tracker app + Docker                        | Done        |
 | 3     | Helm chart + AKS platform add-ons                  | Done        |
 | 4     | GitHub Actions CI/CD                               | Done        |
-| 5     | Ansible + legacy-to-AKS migration                  | Planned     |
+| 5     | Ansible + legacy-to-AKS migration                  | Done        |
 | 6     | Monitoring, chaos drills, runbooks, GenAI triage   | Planned     |
 | 7     | Docs, ADRs, demo                                   | Planned     |
 
@@ -214,6 +214,40 @@ main    ─▶ app:   push dev ACR ─▶ deploy dev ─▶ [approval] ─▶ im
 ```bash
 make ci-lint                     # actionlint + zizmor on the workflows
 ```
+
+## Migration (Phase 5)
+
+The mission team's starting point is reproduced, then automated away:
+
+- **`baseline_hardening`:** CIS-style Ubuntu 24.04 baseline: unattended
+  security upgrades, SSH restricted to keys, the `sudo` group and FIPS-approved
+  algorithms, kernel network protections, auditd rules, ufw default-deny, and a
+  consent banner. Validated with `sshd -t` before reload, so it can't lock you out.
+- **`legacy_app`:** the "before" state: Sortie Tracker as a sandboxed systemd
+  service (`ProtectSystem=strict`, no capabilities) with a local PostgreSQL 16.
+- **`monitoring_agent`:** node exporter bound to the private interface.
+- **`legacy_cutover`:** strangler cutover: the legacy port becomes an nginx proxy
+  to the AKS gateway, so clients change nothing; rollback restores the service.
+- **Dynamic inventory:** VMs are found by Azure tags (`role`, `environment`); no IPs in git.
+
+**`scripts/migrate_db.py`:** a generic, Alembic-aware PostgreSQL data migration:
+- **Preflight:** same major version, same schema revision, target empty.
+- **Copy:** `pg_dump` / `pg_restore --single-transaction`, so all rows arrive or none do.
+- **Sequences:** reset to the restored data.
+- **Validate:** per-table row counts **and content checksums**.
+- **Report:** JSON + Markdown for the change ticket. Credentials only ever travel in
+  environment variables.
+
+**`scripts/cutover.sh migrate <env>`:** Key Vault credentials → quiesce AKS →
+freeze legacy writes → migrate + verify (legacy service auto-restored on any
+failure) → AKS must serve the migrated counts → switch traffic.
+Procedure, go/no-go and reconciliation: [docs/runbooks/migration.md](docs/runbooks/migration.md).
+
+**Rehearsed on every PR** (`make migration-rehearsal`, `ansible` workflow), with
+Docker stand-ins for the VM (systemd + real SSH), Azure PG and AKS:
+converge → **idempotence (changed=0)** → migrate (PASS) → re-run **refused** on
+a populated target → **one tampered row detected** → cutover → rollback →
+ansible-lint (production profile).
 
 ## Repository layout
 

@@ -1,0 +1,7 @@
+# proxy:  legacy VM forwards its port to the new platform (strangler cutover);
+#         existing clients keep their URL while traffic is served by AKS.
+# legacy: rollback; the original service answers again.
+legacy_cutover_state: proxy
+
+# New platform base URL, e.g. http://<gateway-ip> (required for proxy).
+legacy_cutover_upstream_url: ""

@@ -197,6 +197,36 @@ k8s-local-e2e: app-build ## Full platform + chart end-to-end test on a local kin
 k8s-local-down: ## Delete the local kind cluster
 	kind delete cluster --name hangar
 
+##@ Phase 5 - Configuration management and migration
+
+ANSIBLE_DIR := ansible
+
+.PHONY: ansible-deps
+ansible-deps: ## Install pinned Ansible + collections (incl. Azure inventory SDKs)
+	pip install -r $(ANSIBLE_DIR)/requirements.txt
+	cd $(ANSIBLE_DIR) && ansible-galaxy collection install -r requirements.yml -p .collections
+	pip install -r $(ANSIBLE_DIR)/.collections/ansible_collections/azure/azcollection/requirements.txt
+
+.PHONY: ansible-lint
+ansible-lint: ## ansible-lint (production profile)
+	cd $(ANSIBLE_DIR) && ansible-lint
+
+.PHONY: legacy-converge
+legacy-converge: ## Harden + deploy the legacy app on ENV's legacy VM
+	cd $(ANSIBLE_DIR) && ansible-playbook playbooks/site.yml -l env_$(ENV)
+
+.PHONY: migration-rehearsal
+migration-rehearsal: app-build ## Full migration rehearsal in Docker (no Azure needed)
+	bash $(ANSIBLE_DIR)/tests/rehearsal.sh
+
+.PHONY: cutover
+cutover: ## Migrate ENV's legacy data to Azure PG and switch traffic to AKS
+	bash scripts/cutover.sh migrate $(ENV)
+
+.PHONY: cutover-rollback
+cutover-rollback: ## Send ENV's legacy traffic back to the legacy service
+	bash scripts/cutover.sh rollback $(ENV)
+
 ##@ Quality
 
 .PHONY: hooks

@@ -1,0 +1,16 @@
+# Ansible control node with the same pinned versions CI and operators use.
+FROM python:3.13-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssh-client curl jq git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt requirements.yml /tmp/
+RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+    && ansible-galaxy collection install -r /tmp/requirements.yml -p /usr/share/ansible/collections
+
+ENV ANSIBLE_CONFIG=/repo/ansible/ansible.cfg \
+    ANSIBLE_COLLECTIONS_PATH=/usr/share/ansible/collections \
+    ANSIBLE_FORCE_COLOR=1
+WORKDIR /repo/ansible
+CMD ["sleep", "infinity"]

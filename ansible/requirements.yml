@@ -1,0 +1,12 @@
+# ansible-galaxy collection install -r requirements.yml -p .collections
+collections:
+  - name: ansible.posix
+    version: "2.2.2"
+  - name: community.general
+    version: "13.5.0"
+  - name: community.postgresql
+    version: "5.0.0"
+  # Dynamic inventory only. Its Python SDK requirements are large; install with:
+  #   pip install -r .collections/ansible_collections/azure/azcollection/requirements.txt
+  - name: azure.azcollection
+    version: "4.1.0"

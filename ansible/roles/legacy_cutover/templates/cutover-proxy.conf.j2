@@ -1,0 +1,23 @@
+# {{ ansible_managed }}
+# Strangler cutover: existing clients of {{ inventory_hostname }}:{{ app_port }}
+# are transparently served by the new platform at {{ legacy_cutover_upstream_url }}.
+server {
+    listen {{ app_port }} default_server;
+    server_tokens off;
+
+    location / {
+        proxy_pass {{ legacy_cutover_upstream_url }};
+        proxy_http_version 1.1;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Preserve the caller's request ID end to end (generate one if absent).
+        set $hangar_request_id $http_x_request_id;
+        if ($hangar_request_id = "") {
+            set $hangar_request_id $request_id;
+        }
+        proxy_set_header X-Request-ID $hangar_request_id;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 30s;
+        add_header X-Served-By "legacy-cutover-proxy" always;
+    }
+}

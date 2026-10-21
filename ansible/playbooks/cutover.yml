@@ -1,0 +1,9 @@
+# Switch legacy clients to the new platform (strangler proxy).
+#   ansible-playbook playbooks/cutover.yml -l env_dev -e legacy_cutover_upstream_url=http://<gateway-ip>
+- name: Cut over legacy endpoint to the new platform
+  hosts: role_legacy_app
+  become: true
+  roles:
+    - role: legacy_cutover
+      vars:
+        legacy_cutover_state: proxy

@@ -1,0 +1,12 @@
+# Converges the legacy host: hardening, the legacy deployment, node metrics.
+#   ansible-playbook playbooks/site.yml -l env_dev
+- name: Converge legacy Sortie Tracker hosts
+  hosts: role_legacy_app
+  become: true
+  roles:
+    - role: baseline_hardening
+      tags: [hardening]
+    - role: legacy_app
+      tags: [app]
+    - role: monitoring_agent
+      tags: [monitoring]

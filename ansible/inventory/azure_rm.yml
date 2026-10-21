@@ -1,0 +1,22 @@
+# Dynamic inventory: VMs are discovered from Azure, grouped by the tags the
+# legacy_vm Terraform module sets. No IP addresses live in git.
+#
+#   role=legacy-app   -> group role_legacy_app
+#   environment=dev   -> group env_dev
+#
+# Authenticates with the operator's `az login` session.
+# Preview: ansible-inventory --graph
+plugin: azure.azcollection.azure_rm
+auth_source: cli
+include_vm_resource_groups:
+  - rg-hangar-dev
+  - rg-hangar-prod
+plain_host_names: true
+keyed_groups:
+  - prefix: role
+    key: tags.role | default('untagged')
+  - prefix: env
+    key: tags.environment | default('untagged')
+hostvar_expressions:
+  # The NSG only admits SSH from HANGAR_ALLOWED_SSH_CIDRS on the public IP.
+  ansible_host: (public_ipv4_address | default([]) + private_ipv4_addresses) | first

@@ -1,0 +1,11 @@
+# Undo a cutover: the legacy service answers on its original port again.
+# NOTE: writes made on the new platform after cutover are NOT copied back;
+# see docs/runbooks/migration.md for the data reconciliation step.
+#   ansible-playbook playbooks/rollback.yml -l env_dev
+- name: Roll back legacy endpoint to the legacy service
+  hosts: role_legacy_app
+  become: true
+  roles:
+    - role: legacy_cutover
+      vars:
+        legacy_cutover_state: legacy

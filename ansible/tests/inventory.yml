@@ -1,0 +1,15 @@
+# Rehearsal inventory: same group names as the Azure dynamic inventory.
+# Host-level vars override the playbook group_vars (VNet CIDR) on purpose.
+all:
+  children:
+    role_legacy_app:
+      hosts:
+        legacy:
+          ansible_host: 172.29.250.10
+          ansible_ssh_private_key_file: /root/.ssh/id_ed25519
+          vnet_cidr: 172.29.250.0/24
+          # Kernel-level controls belong to the container host; skip them here.
+          baseline_hardening_sysctl_enabled: false
+          baseline_hardening_auditd_enabled: false
+          # Keep rehearsals fast and deterministic.
+          baseline_hardening_apply_updates: false

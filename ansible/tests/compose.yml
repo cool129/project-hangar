@@ -1,0 +1,81 @@
+# Migration rehearsal sandbox: every Azure component has a local stand-in.
+#   legacy     -> the Azure legacy VM (systemd + sshd, configured by Ansible)
+#   azurepg    -> Azure Database for PostgreSQL Flexible Server
+#   platform   -> Sortie Tracker on AKS (same image, migrations run first)
+#   controller -> the operator's Ansible control node
+# Driven by ansible/tests/rehearsal.sh.
+name: hangar-rehearsal
+
+networks:
+  vnet:
+    ipam:
+      config:
+        - subnet: 172.29.250.0/24
+
+services:
+  legacy:
+    build:
+      context: .
+      dockerfile: Dockerfile.legacy
+      args:
+        SSH_PUBKEY: ${REHEARSAL_SSH_PUBKEY:?set by rehearsal.sh}
+    hostname: legacy
+    privileged: true  # systemd + ufw need it; confined to this throwaway container
+    cgroup: host
+    tmpfs:
+      - /run
+      - /run/lock
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    networks:
+      vnet:
+        ipv4_address: 172.29.250.10
+
+  azurepg:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: sortie_tracker
+      POSTGRES_USER: hangaradmin
+      # Deliberately contains URL-reserved characters to prove credential encoding.
+      POSTGRES_PASSWORD: "Rehearsal#Pass%9+x"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hangaradmin -d sortie_tracker"]
+      interval: 3s
+      retries: 20
+    networks:
+      vnet:
+        ipv4_address: 172.29.250.20
+
+  platform:
+    image: sortie-tracker:local
+    # Mirrors the AKS pod: migrations (init container) then the API.
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn sortie_tracker.main:app --host 0.0.0.0 --port 8000 --no-access-log"]
+    environment:
+      DB_HOST: azurepg
+      DB_NAME: sortie_tracker
+      DB_USER: hangaradmin
+      DB_PASSWORD: "Rehearsal#Pass%9+x"
+      DB_SSLMODE: disable
+      APP_ENV: rehearsal-aks
+      GIT_SHA: rehearsal
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      azurepg:
+        condition: service_healthy
+    networks:
+      vnet:
+        ipv4_address: 172.29.250.30
+
+  controller:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile.controller
+    volumes:
+      - ../..:/repo:ro
+      - ./.work:/work:ro
+      - ./.out:/out
+    networks:
+      vnet:
+        ipv4_address: 172.29.250.5

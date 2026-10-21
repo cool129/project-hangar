@@ -1,0 +1,42 @@
+# Each control can be toggled so the same role runs on Azure VMs and in the
+# container-based rehearsal (where kernel-level settings belong to the host).
+
+baseline_hardening_apply_updates: true
+baseline_hardening_sysctl_enabled: true
+baseline_hardening_auditd_enabled: true
+baseline_hardening_firewall_enabled: true
+
+# Groups allowed to log in over SSH. The Azure admin user is in `sudo`.
+baseline_hardening_ssh_allow_groups:
+  - sudo
+# Sources allowed to SSH at the host firewall (the NSG is the outer layer).
+baseline_hardening_ssh_allowed_cidrs:
+  - any
+
+baseline_hardening_absent_packages:
+  - telnet
+  - inetutils-telnet
+  - rsh-client
+  - talk
+  - nis
+
+baseline_hardening_login_banner: |
+  NOTICE: Authorized use only. This system is part of Project HANGAR.
+  Activity on this system is logged and monitored. By continuing you
+  consent to monitoring; unauthorized use may result in disciplinary,
+  civil or criminal action.
+
+baseline_hardening_sysctl:
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.conf.default.accept_redirects: 0
+  net.ipv4.conf.all.send_redirects: 0
+  net.ipv4.conf.all.accept_source_route: 0
+  net.ipv4.conf.all.rp_filter: 1
+  net.ipv4.conf.all.log_martians: 1
+  net.ipv4.icmp_echo_ignore_broadcasts: 1
+  net.ipv4.tcp_syncookies: 1
+  net.ipv6.conf.all.accept_redirects: 0
+  kernel.kptr_restrict: 2
+  kernel.dmesg_restrict: 1
+  kernel.randomize_va_space: 2
+  fs.suid_dumpable: 0

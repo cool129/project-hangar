@@ -1,0 +1,3 @@
+monitoring_agent_node_exporter_port: 9100
+# Bind to the private interface only; scraped from inside the VNet.
+monitoring_agent_listen_address: "{{ ansible_facts['default_ipv4']['address'] }}"

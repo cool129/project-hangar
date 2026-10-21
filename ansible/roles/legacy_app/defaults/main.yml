@@ -1,0 +1,19 @@
+# The "before" state of the migration: Sortie Tracker the way the mission team
+# ran it by hand, a systemd service plus a local PostgreSQL on one VM.
+
+legacy_app_source_dir: "{{ playbook_dir }}/../../app"
+legacy_app_release_dir: "{{ app_home }}/release"
+legacy_app_venv: "{{ app_home }}/venv"
+legacy_app_config_dir: /etc/sortie-tracker
+legacy_app_version_label: legacy
+
+legacy_app_db_name: sortie_tracker
+legacy_app_db_user: sortie
+# Generated once per host and kept on the control node (gitignored).
+legacy_app_db_password: >-
+  {{ lookup('ansible.builtin.password',
+            local_credentials_dir ~ '/' ~ inventory_hostname ~ '-legacy-db',
+            chars=['ascii_letters', 'digits'], length=32) }}
+
+legacy_app_seed_aircraft: 24
+legacy_app_seed_sorties: 300

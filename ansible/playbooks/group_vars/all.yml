@@ -1,0 +1,13 @@
+ansible_user: hangaradmin
+
+app_name: sortie-tracker
+app_user: sortie
+app_port: 8000
+app_home: /opt/sortie-tracker
+
+# Where generated, machine-local secrets (legacy DB password) are kept on the
+# control node. Gitignored; never committed.
+local_credentials_dir: "{{ playbook_dir }}/../.credentials"
+
+# Overridden per environment in env_<name>.yml (VNet address space).
+vnet_cidr: 10.0.0.0/8

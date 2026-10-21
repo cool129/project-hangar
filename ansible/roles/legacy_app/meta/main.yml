@@ -1,0 +1,12 @@
+galaxy_info:
+  role_name: legacy_app
+  namespace: hangar
+  author: Project HANGAR platform team
+  description: Sortie Tracker as a sandboxed systemd service with a local PostgreSQL 16 (pre-migration state).
+  license: MIT
+  min_ansible_version: "2.17"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies: []
