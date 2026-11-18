@@ -84,7 +84,7 @@ jobs:
 
       - name: Upload Checkov SARIF
         if: always() && hashFiles('reports/results_sarif.sarif') != ''
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
         with:
           sarif_file: reports/results_sarif.sarif
           category: checkov-kubernetes
@@ -106,7 +106,7 @@ jobs:
           version: v4.3.0
 
       - name: Create kind cluster
-        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
         with:
           version: v0.33.0
           cluster_name: hangar
